@@ -758,6 +758,7 @@ const oppCounts = computed(() => [
 ]);
 const turnPlayer = ref<number>(0); // 0=South(player), 1=East, 2=North, 3=West
 const lastDiscarded = ref<MahjongTile | null>(null);
+const pendingPengTurn = ref<number | null>(null);
 
 // 庄家与打色子定庄状态 (0=您/本席, 1=东席, 2=北席, 3=西席)
 const dealerSeat = ref<number>(0);
@@ -964,6 +965,7 @@ function cleanAllGameTimers() {
   stopClaimCountdown();
   resetAutoHostState();
   cleanDealingTimers();
+  pendingPengTurn.value = null;
   if (botTimer) {
     clearTimeout(botTimer);
     botTimer = null;
@@ -1107,10 +1109,15 @@ function waitForPlayerClaim(next: () => void) {
       }
     }, 1000);
   } else {
+    // 🛡️ 在联机对局中，如果本家是下家，给其它席位留足1200ms碰杠决策窗口，
+    // 避免本家在550ms内过快摸牌造成与其它玩家碰牌发生并发竞态
+    const discRel = lastDiscarded.value?.discardBy ?? 0;
+    const isNextSelf = ((discRel + 1) % 4) === 0;
+    const waitDelay = (!props.isPracticeMode && props.ws && isNextSelf) ? 1200 : 550;
     const t = setTimeout(() => {
       if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
       next();
-    }, 550);
+    }, waitDelay);
     botActionTimers.push(t);
   }
 }
@@ -2125,7 +2132,7 @@ function skipDealingAnimation() {
 // 规则：可以碰 (他人出牌时，手牌中有2张相同牌；红中不可碰)
 const canPeng = computed(() => {
   if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return false;
-  if (!lastDiscarded.value || turnPlayer.value === 0) return false;
+  if (!lastDiscarded.value || lastDiscarded.value.discardBy === 0) return false;
   const d = lastDiscarded.value;
   // 红中模式下，红中为万能百搭，不可被碰
   if (isHongzhongMode.value && isHongzhong(d)) return false;
@@ -2136,7 +2143,7 @@ const canPeng = computed(() => {
 const canGang = computed(() => {
   if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return false;
   // 1. 明杠：他人出牌时，手中已有3张相同牌
-  if (lastDiscarded.value && turnPlayer.value !== 0) {
+  if (lastDiscarded.value && lastDiscarded.value.discardBy !== 0) {
     const d = lastDiscarded.value;
     if (isHongzhongMode.value && isHongzhong(d)) return false;
     if (myHand.value.filter((c) => c.type === d.type && c.value === d.value).length === 3) return true;
@@ -3427,6 +3434,7 @@ function onCanvasClick(e: MouseEvent | PointerEvent) {
         // Discard tile!
         if (turnPlayer.value !== 0 || myHand.value.length % 3 !== 2) return;
         stopTurnCountdown();
+        pendingPengTurn.value = null;
         const discarded = myHand.value.splice(i, 1)[0];
         discarded.discardBy = 0;
         myHand.value = sortHand(myHand.value);
@@ -3501,6 +3509,7 @@ function handleDraw() {
 function handleDiscardSelected() {
   if (selectedIndex.value === null || myHand.value.length % 3 !== 2 || turnPlayer.value !== 0 || dealingPhase.value !== 'playing') return;
   stopTurnCountdown();
+  pendingPengTurn.value = null;
   const discarded = myHand.value.splice(selectedIndex.value, 1)[0];
   discarded.discardBy = 0;
   myHand.value = sortHand(myHand.value);
@@ -3522,7 +3531,19 @@ function handleDiscardSelected() {
 function handlePeng() {
   if (!canPeng.value || !lastDiscarded.value) return;
   stopClaimCountdown();
+  isClaiming.value = false;
   if (botTimer) clearTimeout(botTimer);
+
+  // 🛡️ 如果因为网络延迟或抢跑导致手牌已为 3k+2（如摸了牌变成14张），碰牌优先，先将抢跑摸牌回滚至牌墙！
+  if (myHand.value.length % 3 === 2) {
+    const premature = myHand.value.pop();
+    if (premature) {
+      wallPool.unshift(premature);
+      wallCount.value = wallPool.length;
+      console.log(`🛡️ [碰牌保护] 碰牌前检测到手牌为14张，已撤回抢跑摸牌【${premature.text}】`);
+    }
+  }
+
   const d = lastDiscarded.value;
   const matches = myHand.value.filter((c) => c.type === d.type && c.value === d.value).slice(0, 2);
 
@@ -3535,12 +3556,13 @@ function handlePeng() {
       discards.value.pop();
     }
     lastDiscarded.value = null;
+    pendingPengTurn.value = 0;
+    turnPlayer.value = 0;
+    selectedIndex.value = null;
     soundFX.playMahjongClack();
     haptics.sealStamp();
     soundFX.speakAction('peng');
     tipMessage.value = `碰牌成功！碰进【${d.text}】亮刻，请打出一张牌`;
-    turnPlayer.value = 0;
-    selectedIndex.value = null;
     drawTable();
     sendGameMove('peng', { tile: d, absSeat: mySeat.value });
     saveLocalSnapshot();
@@ -3556,6 +3578,7 @@ function handlePeng() {
 function handleGang() {
   if (!canGang.value) return;
   stopClaimCountdown();
+  isClaiming.value = false;
   if (botTimer) clearTimeout(botTimer);
   soundFX.playMahjongClack();
   haptics.sealStamp();
@@ -3566,7 +3589,15 @@ function handleGang() {
   let gangTile: MahjongTile | null = null;
 
   // Case 1: 明杠 (他人弃牌)
-  if (lastDiscarded.value && turnPlayer.value !== 0) {
+  if (lastDiscarded.value && lastDiscarded.value.discardBy !== 0) {
+    // 🛡️ 如果抢跑摸了牌，先回滚入牌墙
+    if (myHand.value.length % 3 === 2) {
+      const premature = myHand.value.pop();
+      if (premature) {
+        wallPool.unshift(premature);
+        wallCount.value = wallPool.length;
+      }
+    }
     const d = lastDiscarded.value;
     const matches = myHand.value.filter((c) => c.type === d.type && c.value === d.value);
     if (matches.length >= 3) {
@@ -3580,6 +3611,7 @@ function handleGang() {
       }
       kongedOpponentSeat = d.discardBy !== undefined ? d.discardBy : turnPlayer.value;
       lastDiscarded.value = null;
+      pendingPengTurn.value = 0;
       turnPlayer.value = 0;
     }
   } else if (turnPlayer.value === 0) {
@@ -3806,6 +3838,8 @@ function botPlay(seat: number, next: () => void) {
         discards.value.pop();
       }
       lastDiscarded.value = null;
+      turnPlayer.value = seat;
+      pendingPengTurn.value = seat;
       soundFX.playMahjongClack();
       soundFX.speakAction('peng', { isFemale: botIdx === 1 });
       tipMessage.value = `🀄 【${SEAT_NAMES[seat]}】大喊：碰！拿下了【${d.text}】`;
@@ -3813,6 +3847,7 @@ function botPlay(seat: number, next: () => void) {
 
       const t = setTimeout(() => {
         if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
+        pendingPengTurn.value = null;
         const updatedHand = oppHands.value[botIdx];
         const bestDiscardIdx = findSmartBestDiscard(updatedHand);
         const [discarded] = updatedHand.splice(bestDiscardIdx, 1);
@@ -3825,7 +3860,9 @@ function botPlay(seat: number, next: () => void) {
         soundFX.speakVoice(discarded.text);
         tipMessage.value = `🀄 【${SEAT_NAMES[seat]}】碰后打出了【${discarded.text}】`;
         drawTable();
-        next();
+        waitForPlayerClaim(() => {
+          passTurnToNext(seat);
+        });
       }, 1100);
       botActionTimers.push(t);
       return;
@@ -3905,7 +3942,9 @@ function botPlay(seat: number, next: () => void) {
   tipMessage.value = `${['东席', '北席', '西席'][seat - 1]} 打出了【${discarded.text}】`;
   drawTable();
   saveLocalSnapshot();
-  next();
+  waitForPlayerClaim(() => {
+    next();
+  });
 }
 
 function canPlayerClaimTile(tile: MahjongTile): boolean {
@@ -3924,6 +3963,18 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
   const botIdx = relSeat - 1; // 0, 1, 2
 
   if (evt.action === 'draw') {
+    // 🛡️ 碰牌绝对优先于摸牌：
+    // 1. 如果本家刚碰牌（turnPlayer === 0 && myHand.length % 3 === 2），本家处于碰后必须打出一张牌状态，
+    // 绝不允许其它席位因网络竞态到达的过时摸牌事件夺走回合！
+    if (turnPlayer.value === 0 && myHand.value.length % 3 === 2) {
+      console.warn('🛡️ [麻将防锁死] 本地玩家已碰牌正在等待出牌，忽略竞争态中其它席位的过时摸牌事件！');
+      return;
+    }
+    // 2. 如果当前有其它席位刚碰牌尚未打出，碰牌席位拥有绝对出牌权，其它席位摸牌一律视为失效过时事件丢弃！
+    if (pendingPengTurn.value !== null && pendingPengTurn.value !== relSeat) {
+      console.warn('🛡️ [麻将防锁死] 当前有玩家碰牌截击正在等待出牌，忽略竞争态中的过时摸牌事件！');
+      return;
+    }
     stopClaimCountdown();
     let drawnTile = evt.tile;
     if (wallPool.length > 0) {
@@ -3947,6 +3998,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     drawTable();
     saveLocalSnapshot();
   } else if (evt.action === 'discard') {
+    pendingPengTurn.value = null;
     const tile = evt.tile;
     if (!tile) return;
 
@@ -3973,6 +4025,32 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
       passTurnToNext(relSeat);
     });
   } else if (evt.action === 'peng') {
+    // 🛡️ 1. 回滚竞争态中抢跑误摸的牌（碰牌优先于摸牌）
+    // 如果本地玩家手牌已为 3k+2（如摸了牌变成14张），必须回滚撤销摸牌，恢复为13张！
+    if (myHand.value.length % 3 === 2) {
+      const premature = myHand.value.pop();
+      if (premature) {
+        wallPool.unshift(premature);
+        wallCount.value = wallPool.length;
+        console.log(`🛡️ [客户端碰牌回滚] 席位【${SEAT_NAMES[relSeat]}】碰牌，本家抢跑摸牌【${premature.text}】已回滚至牌墙`);
+      }
+      selectedIndex.value = null;
+    }
+    // 回滚其他对手席位误摸的牌
+    for (let b = 0; b < 3; b++) {
+      if (b !== botIdx) {
+        const mCount = (oppMelds.value[b] || []).length;
+        const expected = 13 - mCount * 3;
+        while (oppHands.value[b] && oppHands.value[b].length > expected) {
+          const popped = oppHands.value[b].pop();
+          if (popped) {
+            wallPool.unshift(popped);
+            wallCount.value = wallPool.length;
+          }
+        }
+      }
+    }
+
     const tile = evt.tile || lastDiscarded.value;
     const oppHand = oppHands.value[botIdx] || [];
     if (tile) {
@@ -3996,6 +4074,9 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
       }
       lastDiscarded.value = null;
     }
+    stopClaimCountdown();
+    isClaiming.value = false;
+    pendingPengTurn.value = relSeat;
     turnPlayer.value = relSeat;
     ensureOpponentHandSize(botIdx);
     startTurnCountdown();
@@ -4005,6 +4086,33 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     drawTable();
     saveLocalSnapshot();
   } else if (evt.action === 'gang') {
+    // 🛡️ 明杠同样具有截击出牌优先级，回滚非杠牌席位的抢跑摸牌
+    if (lastDiscarded.value) {
+      if (myHand.value.length % 3 === 2) {
+        const premature = myHand.value.pop();
+        if (premature) {
+          wallPool.unshift(premature);
+          wallCount.value = wallPool.length;
+        }
+        selectedIndex.value = null;
+      }
+      for (let b = 0; b < 3; b++) {
+        if (b !== botIdx) {
+          const mCount = (oppMelds.value[b] || []).length;
+          const expected = 13 - mCount * 3;
+          while (oppHands.value[b] && oppHands.value[b].length > expected) {
+            const popped = oppHands.value[b].pop();
+            if (popped) {
+              wallPool.unshift(popped);
+              wallCount.value = wallPool.length;
+            }
+          }
+        }
+      }
+    }
+    stopClaimCountdown();
+    isClaiming.value = false;
+    pendingPengTurn.value = relSeat;
     const tile = evt.tile || lastDiscarded.value;
     const oppHand = oppHands.value[botIdx] || [];
     if (tile) {
@@ -4189,6 +4297,11 @@ function onWsMessage(ev: MessageEvent) {
       } else if (evtAbsSeat === mySeat.value) {
         if (evt.action === 'draw') {
           stopClaimCountdown();
+          // 🛡️ 如果当前手牌已为 3k+2（如本地已碰牌等待出牌），忽略过时的摸牌回执
+          if (myHand.value.length % 3 === 2) {
+            console.warn('🛡️ [麻将防锁死] 手牌已为 3k+2，跳过重复或过时的摸牌回执');
+            return;
+          }
           turnPlayer.value = 0;
           if (myHand.value.length % 3 === 1) {
             let tileToAdd = evt.tile;

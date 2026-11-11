@@ -1640,22 +1640,61 @@ wss.on('connection', (ws) => {
                 bs.turnSeat = (seat + 1) % 4;
                 room.turnSeat = bs.turnSeat;
               }
+              bs.extraState.pendingPengSeat = null;
+              bs.extraState.lastDrawnSeat = null;
+              bs.extraState.lastDrawnTile = null;
+              room.lastTurnTs = Date.now();
             } else if (action === 'draw') {
+              // 🛡️ 碰牌优先级仲裁：若有席位刚刚碰牌正在等待出牌，拒绝非碰牌席位并发抢跑摸牌
+              if (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) {
+                console.warn(`🛡️ [服务端拦截摸牌] 席位 ${bs.extraState.pendingPengSeat} 已碰牌正在等待出牌，拦截席位 ${seat} 的违规摸牌`);
+                return;
+              }
+              if (bs.turnSeat !== seat) {
+                console.warn(`🛡️ [服务端拦截摸牌] 当前轮到席位 ${bs.turnSeat}，拦截席位 ${seat} 的非轮次摸牌`);
+                return;
+              }
               if (bs.extraState.wallRemaining > 0) {
                 bs.extraState.wallRemaining--;
               }
+              let drawn: any = null;
               if ((room as any).deal?.remainingWall?.length > 0) {
-                const drawn = (room as any).deal.remainingWall.shift();
+                drawn = (room as any).deal.remainingWall.shift();
                 if (drawn && (room as any).deal.seatCards?.[seat]) {
                   (room as any).deal.seatCards[seat].push(p.tile || drawn);
                 }
               }
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
+              room.lastTurnTs = Date.now();
               if (bs.handsCount) {
                 bs.handsCount[seat] = (bs.handsCount[seat] || 13) + 1;
               }
+              bs.extraState.lastDrawnSeat = seat;
+              bs.extraState.lastDrawnTile = p.tile || drawn;
             } else if (action === 'peng') {
+              // 🛡️ 碰牌截击仲裁：检测是否有下家在竞态中抢跑摸牌，若有，强制将抢跑摸牌回滚至牌墙！
+              let canceledDrawSeat: number | null = null;
+              if (bs.extraState.lastDrawnSeat !== null && bs.extraState.lastDrawnSeat !== undefined && bs.extraState.lastDrawnSeat !== seat) {
+                canceledDrawSeat = bs.extraState.lastDrawnSeat;
+                const dSeat = canceledDrawSeat;
+                if ((room as any).deal?.seatCards?.[dSeat]?.length > 0) {
+                  const returned = (room as any).deal.seatCards[dSeat].pop();
+                  if (returned && Array.isArray((room as any).deal.remainingWall)) {
+                    (room as any).deal.remainingWall.unshift(returned);
+                  }
+                }
+                if (typeof bs.extraState.wallRemaining === 'number') {
+                  bs.extraState.wallRemaining++;
+                }
+                if (bs.handsCount && bs.handsCount[dSeat] > 0) {
+                  bs.handsCount[dSeat] = Math.max(0, bs.handsCount[dSeat] - 1);
+                }
+                bs.extraState.lastDrawnSeat = null;
+                bs.extraState.lastDrawnTile = null;
+                console.log(`🛡️ [服务端碰牌优先仲裁] 席位 ${seat} 碰牌成功，席位 ${dSeat} 的抢跑摸牌已回滚入牌墙`);
+              }
+
               if (bs.extraState.mahjongDiscards.length > 0) {
                 const lastIdx = bs.extraState.mahjongDiscards.length - 1;
                 if (!tile || bs.extraState.mahjongDiscards[lastIdx].id === tile.id) {
@@ -1668,8 +1707,10 @@ wss.on('connection', (ws) => {
               if (!bs.extraState.mahjongMelds[seat]) bs.extraState.mahjongMelds[seat] = [];
               bs.extraState.mahjongMelds[seat].push({ type: 'peng', tile, seat });
               bs.extraState.lastDiscarded = null;
+              bs.extraState.pendingPengSeat = seat;
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
+              room.lastTurnTs = Date.now();
               if (bs.handsCount && bs.handsCount[seat] >= 2) {
                 bs.handsCount[seat] -= 2;
               }
@@ -1687,7 +1728,32 @@ wss.on('connection', (ws) => {
                   removed++;
                 }
               }
+              if (canceledDrawSeat !== null) {
+                p.canceledDrawSeat = canceledDrawSeat;
+              }
             } else if (action === 'gang') {
+              let canceledDrawSeat: number | null = null;
+              if (p.isMingGang || (bs.extraState.lastDiscarded && bs.extraState.lastDiscarded.discardBy !== seat)) {
+                if (bs.extraState.lastDrawnSeat !== null && bs.extraState.lastDrawnSeat !== undefined && bs.extraState.lastDrawnSeat !== seat) {
+                  canceledDrawSeat = bs.extraState.lastDrawnSeat;
+                  const dSeat = canceledDrawSeat;
+                  if ((room as any).deal?.seatCards?.[dSeat]?.length > 0) {
+                    const returned = (room as any).deal.seatCards[dSeat].pop();
+                    if (returned && Array.isArray((room as any).deal.remainingWall)) {
+                      (room as any).deal.remainingWall.unshift(returned);
+                    }
+                  }
+                  if (typeof bs.extraState.wallRemaining === 'number') {
+                    bs.extraState.wallRemaining++;
+                  }
+                  if (bs.handsCount && bs.handsCount[dSeat] > 0) {
+                    bs.handsCount[dSeat] = Math.max(0, bs.handsCount[dSeat] - 1);
+                  }
+                  bs.extraState.lastDrawnSeat = null;
+                  bs.extraState.lastDrawnTile = null;
+                  console.log(`🛡️ [服务端明杠优先仲裁] 席位 ${seat} 明杠成功，席位 ${dSeat} 的抢跑摸牌已回滚入牌墙`);
+                }
+              }
               if (p.isMingGang && bs.extraState.mahjongDiscards.length > 0) {
                 const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => tile && d.id === tile.id);
                 if (fIdx >= 0) bs.extraState.mahjongDiscards.splice(fIdx, 1);
@@ -1714,6 +1780,11 @@ wss.on('connection', (ws) => {
               }
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
+              room.lastTurnTs = Date.now();
+              bs.extraState.pendingPengSeat = seat;
+              if (canceledDrawSeat !== null) {
+                p.canceledDrawSeat = canceledDrawSeat;
+              }
             } else if (action === 'pass') {
               if (p.nextTurn !== undefined) {
                 bs.turnSeat = Number(p.nextTurn);

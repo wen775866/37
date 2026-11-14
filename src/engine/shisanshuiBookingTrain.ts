@@ -610,13 +610,14 @@ export function checkAndAutoSettle0600(
   const submittedTables = carriage.tables.filter((t) => t.isSubmitted);
   if (submittedTables.length === 0) return null;
 
-  // 检查是否已经到达或过了今天 06:00，且尚未自动结算
+  // 检查是否已经到达或过了今天 06:00，且存在在今天 06:00 之前提交但尚未结算的桌次
   const now = new Date();
   const today0600 = new Date(now);
   today0600.setHours(6, 0, 0, 0);
+  const cutoffTs = today0600.getTime();
 
-  const hasUnsettled = submittedTables.some((t) => !t.settlement?.isSettled);
-  if (now.getTime() >= today0600.getTime() && hasUnsettled) {
+  const hasUnsettled = submittedTables.some((t) => !t.settlement?.isSettled && (t.submittedAt || 0) < cutoffTs);
+  if (now.getTime() >= cutoffTs && hasUnsettled) {
     return settleCarriageTables(sceneMode, carriage.carriageNumber, false);
   }
 

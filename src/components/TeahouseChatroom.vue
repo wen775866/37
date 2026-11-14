@@ -988,7 +988,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { UserProfile } from '../utils/storage';
 import { soundFX } from '../utils/sound';
 
@@ -2072,6 +2072,18 @@ function handleWsMessage(event: MessageEvent) {
     }
   } catch {}
 }
+
+watch(() => props.ws, (newWs, oldWs) => {
+  if (oldWs) {
+    try { oldWs.removeEventListener('message', handleWsMessage); } catch {}
+  }
+  if (newWs) {
+    try {
+      newWs.removeEventListener('message', handleWsMessage);
+      newWs.addEventListener('message', handleWsMessage);
+    } catch {}
+  }
+});
 
 onMounted(() => {
   if (props.ws) {

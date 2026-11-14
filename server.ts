@@ -21,8 +21,10 @@ import { checkMahjongWin, computeMahjongSettlement } from './src/engine/mahjongR
 
 function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: boolean, pPayload?: any) {
   if (!room || !room.boardState) return;
+  if (room.boardState.phase === 'ended') return;
   room.boardState.winnerSeat = winnerSeat;
   room.boardState.phase = 'ended';
+  room.status = 'finished';
 
   const dealObj = room.deal || {};
   const winnerHand = (dealObj.seatCards && dealObj.seatCards[winnerSeat] && dealObj.seatCards[winnerSeat].length > 0)
@@ -32,13 +34,30 @@ function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: bo
   const remWall = dealObj.remainingWall || [];
   const sMode = room.sceneMode || 'hongzhong-6';
 
+  const serverMeldsRaw = room.boardState.extraState?.mahjongMelds?.[winnerSeat] || [];
+  const fallbackWinningMelds = Array.isArray(serverMeldsRaw)
+    ? serverMeldsRaw
+        .map((m: any) => (Array.isArray(m) ? m : m?.tile ? Array(m.type === 'gang' ? 4 : 3).fill(m.tile) : []))
+        .filter((arr: any[]) => arr.length > 0)
+    : [];
+  const resolvedWinningMelds = (Array.isArray(pPayload?.winningMelds) && pPayload.winningMelds.length > 0)
+    ? pPayload.winningMelds
+    : fallbackWinningMelds;
+
+  const resolvedKongScores: [number, number, number, number] =
+    (Array.isArray(room.boardState.seatKongScores) && room.boardState.seatKongScores.length === 4)
+      ? room.boardState.seatKongScores
+      : (Array.isArray(pPayload?.seatKongScores) && pPayload.seatKongScores.length === 4
+          ? pPayload.seatKongScores
+          : [0, 0, 0, 0]);
+
   const stl = computeMahjongSettlement(
     winnerSeat,
     winnerHand,
-    pPayload?.winningMelds || [],
+    resolvedWinningMelds,
     remWall,
     sMode,
-    pPayload?.seatKongScores || [0, 0, 0, 0],
+    resolvedKongScores,
     isFourHz,
     pPayload?.maTiles
   );
@@ -78,6 +97,7 @@ function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: bo
     hitMaCount: stl.hitMaCount,
     payoutPerOpponent: stl.payoutPerOpponent,
     netCoinsPerSeat: stl.netCoinsPerSeat,
+    seatKongScores: stl.seatKongScores,
     rewardCoins: stl.netCoinsPerSeat[winnerSeat],
     reason: stl.isFourHongzhong ? 'four_hongzhong' : 'zimo_hu',
   };
@@ -94,6 +114,9 @@ function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: bo
   const targetSceneRoom = sceneWaitingRooms.get(room.id);
   if (targetSceneRoom) {
     targetSceneRoom.status = 'finished';
+    targetSceneRoom.players.forEach((pl: any) => {
+      pl.isReady = false;
+    });
     const disconnectedList = targetSceneRoom.players.filter((pl: any) => pl.isDisconnected);
     if (disconnectedList.length > 0) {
       targetSceneRoom.players = targetSceneRoom.players.filter((pl: any) => !pl.isDisconnected);
@@ -103,6 +126,15 @@ function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: bo
       });
       targetSceneRoom.status = 'waiting';
     }
+    broadcast({
+      type: 'scene_room_update',
+      roomId: targetSceneRoom.id,
+      gameType: targetSceneRoom.gameType,
+      sceneMode: targetSceneRoom.sceneMode,
+      players: targetSceneRoom.players,
+      maxPlayers: targetSceneRoom.maxPlayers,
+      status: targetSceneRoom.status,
+    });
   }
 }
 
@@ -761,6 +793,9 @@ wss.on('connection', (ws) => {
           }
         }
         if (room) {
+          if (room.status === 'starting' || room.status === 'playing') {
+            return;
+          }
           const pl = room.players.find((p) =>
             (p.id && pId && (p.id === pId || p.originalId === pId || p.id.startsWith(pId) || pId.startsWith(p.id))) ||
             ((p as any).socketId && (p as any).socketId === (ws as any).socketId) ||
@@ -793,13 +828,16 @@ wss.on('connection', (ws) => {
           // 严禁未全员就绪就开局！只有当所有有效席位均已点击准备 (readyCount >= maxPlayers) 时才切牌开启下一局
           const allReady = room.players.length >= room.maxPlayers && room.players.every((p: any) => p.isReady);
           if (allReady) {
-            console.log(`🚀 [全员就绪再开] 房间 ${room.id} (${readyCount}/${room.maxPlayers}) 4人全员准备完成，生成全新发牌切片开启下一局！`);
+            console.log(`🚀 [全员就绪再开] 房间 ${room.id} (${readyCount}/${room.maxPlayers}) 全员准备完成，生成全新发牌切片开启下一局！`);
             room.status = 'waiting';
             delete (room as any).deal;
             startRoomGameIfFull(room);
           }
+          return;
         }
-        return;
+        if (msg.type === 'scene_player_ready') {
+          return;
+        }
       }
 
       if (msg.type === 'scene_start_game') {
@@ -876,12 +914,18 @@ wss.on('connection', (ws) => {
           const existingRoom = rooms.get(room.id);
           if (existingRoom) {
             existingRoom.status = 'starting';
+            existingRoom.moveCount = 0;
             existingRoom.deal = freshDeal;
             existingRoom.turnSeat = (freshDeal as any)?.starterSeat ?? 0;
             existingRoom.lastTurnTs = Date.now();
             existingRoom.boardState = defaultBoard;
             existingRoom.players = room.players.map((pl, idx) => ({ ...pl, seat: idx, rating: pl.rating || 1900 }));
           }
+        }
+
+        if ((room as any)._startTimer) {
+          clearTimeout((room as any)._startTimer);
+          (room as any)._startTimer = null;
         }
 
         console.log(`🚀 [满员自动发牌] 房间 ${room.id} (${room.gameType}-${room.sceneMode}) ${room.players.length}/${room.maxPlayers} 玩家席位校验完毕，广播 scene_room_full 锁定 UI！`);
@@ -904,13 +948,25 @@ wss.on('connection', (ws) => {
         });
 
         // 7. 1400ms 后顺畅广播 scene_room_started，正式将状态锁定为 playing
-        setTimeout(() => {
-          if (room && sceneWaitingRooms.has(room.id)) {
+        (room as any)._startTimer = setTimeout(() => {
+          (room as any)._startTimer = null;
+          if (room && sceneWaitingRooms.has(room.id) && (room as any).deal === freshDeal) {
             room.status = 'playing';
+            // 游戏开启时先重置真人玩家准备状态再广播 scene_room_started，避免客户端保留 isReady: true 导致下一局显示异常
+            room.players.forEach((p: any) => {
+              if (!p.isAi && !p.isSimulated && !p.isBot && !p.id?.startsWith('BOT-') && !p.id?.startsWith('sim-')) {
+                p.isReady = false;
+              }
+            });
             const authRoom = rooms.get(room.id);
             if (authRoom) {
               authRoom.status = 'playing';
               authRoom.lastTurnTs = Date.now();
+              authRoom.players?.forEach((p: any) => {
+                if (!p.isAi && !p.isSimulated && !p.isBot && !p.id?.startsWith('BOT-') && !p.id?.startsWith('sim-')) {
+                  p.isReady = false;
+                }
+              });
             }
             broadcast({
               type: 'scene_room_started',
@@ -926,13 +982,6 @@ wss.on('connection', (ws) => {
               lockGameLaunch: true,
               forceReset: true,
               timestamp: Date.now(),
-            });
-
-            // 游戏开启后重置真人玩家准备状态，为本局结束后的“继续下一局”做准备
-            room.players.forEach((p: any) => {
-              if (!p.isAi && !p.isSimulated && !p.isBot && !p.id?.startsWith('BOT-') && !p.id?.startsWith('sim-')) {
-                p.isReady = false;
-              }
             });
           }
         }, 1400);
@@ -1537,11 +1586,12 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // Authoritative Room Restart (同桌再战全员准备就绪才洗牌开局)
+      // Authoritative Room Restart fallback for legacy non-scene rooms
       if (msg.type === 'room_restart') {
         const targetRoomId = msg.roomId;
         let r = (sceneWaitingRooms.get(targetRoomId) as any) || rooms.get(targetRoomId);
         if (r) {
+          if (r.status === 'starting' || r.status === 'playing') return;
           const pId = msg.playerId || (ws as any).scenePlayerId;
           const pl = r.players?.find((p: any) => (p.id && pId && p.id === pId) || (p as any).socketId === (ws as any).socketId);
           if (pl) {
@@ -1566,7 +1616,6 @@ wss.on('connection', (ws) => {
         const targetRoomId = msg.roomId;
         const room = rooms.get(targetRoomId) || (sceneWaitingRooms.get(targetRoomId) as any);
         if (room) {
-          room.moveCount = (room.moveCount || 0) + 1;
           const evt = msg.event || {};
           const p = { ...evt, ...(msg.payload || {}) };
           const seat = typeof msg.seat === 'number' ? msg.seat : (typeof evt.seat === 'number' ? evt.seat : (typeof p.seat === 'number' ? p.seat : 0));
@@ -1579,6 +1628,12 @@ wss.on('connection', (ws) => {
           }
           const bs = room.boardState;
 
+          const mutatingActions = new Set(['play', 'pass', 'draw', 'discard', 'peng', 'gang', 'hu', 'finish']);
+          if (bs.phase === 'ended' && mutatingActions.has(action)) {
+            return;
+          }
+
+          room.moveCount = (room.moveCount || 0) + 1;
           bs.actionSeq = (bs.actionSeq || 0) + 1;
           bs.moveCount = room.moveCount;
           bs.updatedAt = Date.now();
@@ -1615,6 +1670,31 @@ wss.on('connection', (ws) => {
 
             const tile = p.tile || evt.tile;
             if (action === 'discard') {
+              if (
+                (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) ||
+                (typeof bs.turnSeat === 'number' && bs.turnSeat !== seat)
+              ) {
+                console.warn(`🛡️ [服务端拦截出牌] 当前轮到席位 ${bs.turnSeat} (pendingPengSeat=${bs.extraState.pendingPengSeat})，拒绝席位 ${seat} 的非法出牌`);
+                const rejectEvt = {
+                  action: 'discard_rejected',
+                  seat,
+                  absSeat: seat,
+                  turnSeat: bs.turnSeat,
+                  pendingPengSeat: bs.extraState.pendingPengSeat,
+                  wallRemaining: bs.extraState.wallRemaining,
+                };
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'game_event',
+                    roomId: room.id,
+                    seat,
+                    event: rejectEvt,
+                    payload: rejectEvt,
+                    boardState: bs,
+                  }));
+                } catch {}
+                return;
+              }
               if (tile) {
                 const discTile = { ...tile, discardBy: seat };
                 bs.extraState.mahjongDiscards.push(discTile);
@@ -1645,50 +1725,142 @@ wss.on('connection', (ws) => {
               bs.extraState.lastDrawnTile = null;
               room.lastTurnTs = Date.now();
             } else if (action === 'draw') {
-              // 🛡️ 碰牌优先级仲裁：若有席位刚刚碰牌正在等待出牌，拒绝非碰牌席位并发抢跑摸牌
+              // 🛡️ 碰牌优先级仲裁：若有席位刚刚碰牌正在等待出牌，拒绝非碰牌席位并发抢跑摸牌并通知回滚
               if (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) {
                 console.warn(`🛡️ [服务端拦截摸牌] 席位 ${bs.extraState.pendingPengSeat} 已碰牌正在等待出牌，拦截席位 ${seat} 的违规摸牌`);
+                const rejectEvt = {
+                  action: 'draw_rejected',
+                  seat,
+                  absSeat: seat,
+                  turnSeat: bs.turnSeat,
+                  pendingPengSeat: bs.extraState.pendingPengSeat,
+                  wallRemaining: bs.extraState.wallRemaining,
+                  reason: 'pending_peng',
+                };
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'game_event',
+                    roomId: room.id,
+                    seat,
+                    event: rejectEvt,
+                    payload: rejectEvt,
+                    boardState: bs,
+                  }));
+                } catch {}
                 return;
               }
               if (bs.turnSeat !== seat) {
                 console.warn(`🛡️ [服务端拦截摸牌] 当前轮到席位 ${bs.turnSeat}，拦截席位 ${seat} 的非轮次摸牌`);
+                const rejectEvt = {
+                  action: 'draw_rejected',
+                  seat,
+                  absSeat: seat,
+                  turnSeat: bs.turnSeat,
+                  pendingPengSeat: bs.extraState.pendingPengSeat,
+                  wallRemaining: bs.extraState.wallRemaining,
+                  reason: 'not_your_turn',
+                };
+                try {
+                  ws.send(JSON.stringify({
+                    type: 'game_event',
+                    roomId: room.id,
+                    seat,
+                    event: rejectEvt,
+                    payload: rejectEvt,
+                    boardState: bs,
+                  }));
+                } catch {}
                 return;
               }
-              if (bs.extraState.wallRemaining > 0) {
-                bs.extraState.wallRemaining--;
-              }
-              let drawn: any = null;
-              if ((room as any).deal?.remainingWall?.length > 0) {
-                drawn = (room as any).deal.remainingWall.shift();
-                if (drawn && (room as any).deal.seatCards?.[seat]) {
-                  (room as any).deal.seatCards[seat].push(p.tile || drawn);
+              const wallArr = (room as any).deal?.remainingWall;
+              if (!Array.isArray(wallArr) || wallArr.length === 0) {
+                bs.phase = 'ended';
+                bs.isDraw = true;
+                room.status = 'finished';
+                const targetSceneRoom = sceneWaitingRooms.get(room.id);
+                if (targetSceneRoom) {
+                  targetSceneRoom.status = 'finished';
+                  targetSceneRoom.players.forEach((pl: any) => {
+                    pl.isReady = false;
+                  });
+                  broadcast({
+                    type: 'scene_room_update',
+                    roomId: targetSceneRoom.id,
+                    gameType: targetSceneRoom.gameType,
+                    sceneMode: targetSceneRoom.sceneMode,
+                    players: targetSceneRoom.players,
+                    maxPlayers: targetSceneRoom.maxPlayers,
+                    status: targetSceneRoom.status,
+                  });
                 }
+                broadcast({
+                  type: 'game_event',
+                  roomId: room.id,
+                  seat,
+                  event: {
+                    action: 'draw_stalemate',
+                    isDraw: true,
+                    reason: 'wall_exhausted',
+                    message: '牌墙抓毕，本局荒庄（流局）！',
+                  },
+                  payload: {
+                    action: 'draw_stalemate',
+                    isDraw: true,
+                    reason: 'wall_exhausted',
+                    message: '牌墙抓毕，本局荒庄（流局）！',
+                  },
+                  boardState: bs,
+                });
+                return;
               }
+              const drawn = wallArr.shift();
+              if (drawn && (room as any).deal?.seatCards?.[seat]) {
+                (room as any).deal.seatCards[seat].push(drawn);
+              }
+              bs.extraState.wallRemaining = wallArr.length;
+              p.tile = drawn;
+              p.wallRemaining = wallArr.length;
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
               room.lastTurnTs = Date.now();
               if (bs.handsCount) {
-                bs.handsCount[seat] = (bs.handsCount[seat] || 13) + 1;
+                bs.handsCount[seat] = (room as any).deal?.seatCards?.[seat]?.length ?? ((bs.handsCount[seat] || 13) + 1);
               }
               bs.extraState.lastDrawnSeat = seat;
-              bs.extraState.lastDrawnTile = p.tile || drawn;
+              bs.extraState.lastDrawnTile = drawn;
             } else if (action === 'peng') {
-              // 🛡️ 碰牌截击仲裁：检测是否有下家在竞态中抢跑摸牌，若有，强制将抢跑摸牌回滚至牌墙！
+              // 防止多人并发碰同一张牌或弃牌已被认领
+              if (!bs.extraState.lastDiscarded || (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined)) {
+                console.warn(`🛡️ [服务端拦截重复碰牌] 席位 ${seat} 尝试碰牌，但当前弃牌已被认领 (pendingPengSeat=${bs.extraState.pendingPengSeat})`);
+                return;
+              }
+              // 🛡️ 碰牌截击仲裁：检测是否有下家在竞态中抢跑摸牌，若有，精确移除该摸牌并回滚至牌墙！
               let canceledDrawSeat: number | null = null;
+              let canceledDrawTile: any = null;
               if (bs.extraState.lastDrawnSeat !== null && bs.extraState.lastDrawnSeat !== undefined && bs.extraState.lastDrawnSeat !== seat) {
                 canceledDrawSeat = bs.extraState.lastDrawnSeat;
                 const dSeat = canceledDrawSeat;
-                if ((room as any).deal?.seatCards?.[dSeat]?.length > 0) {
-                  const returned = (room as any).deal.seatCards[dSeat].pop();
+                const drawnRef = bs.extraState.lastDrawnTile;
+                const seatHand = (room as any).deal?.seatCards?.[dSeat];
+                if (Array.isArray(seatHand) && seatHand.length > 0) {
+                  let returned: any = null;
+                  if (drawnRef?.id) {
+                    const idx = seatHand.findIndex((c: any) => c.id === drawnRef.id);
+                    if (idx >= 0) returned = seatHand.splice(idx, 1)[0];
+                  }
+                  if (!returned) returned = seatHand.pop();
                   if (returned && Array.isArray((room as any).deal.remainingWall)) {
                     (room as any).deal.remainingWall.unshift(returned);
+                    canceledDrawTile = returned;
                   }
                 }
-                if (typeof bs.extraState.wallRemaining === 'number') {
+                if (Array.isArray((room as any).deal?.remainingWall)) {
+                  bs.extraState.wallRemaining = (room as any).deal.remainingWall.length;
+                } else if (typeof bs.extraState.wallRemaining === 'number') {
                   bs.extraState.wallRemaining++;
                 }
                 if (bs.handsCount && bs.handsCount[dSeat] > 0) {
-                  bs.handsCount[dSeat] = Math.max(0, bs.handsCount[dSeat] - 1);
+                  bs.handsCount[dSeat] = (room as any).deal?.seatCards?.[dSeat]?.length ?? Math.max(0, bs.handsCount[dSeat] - 1);
                 }
                 bs.extraState.lastDrawnSeat = null;
                 bs.extraState.lastDrawnTile = null;
@@ -1728,48 +1900,136 @@ wss.on('connection', (ws) => {
                   removed++;
                 }
               }
+              p.wallRemaining = bs.extraState.wallRemaining;
               if (canceledDrawSeat !== null) {
                 p.canceledDrawSeat = canceledDrawSeat;
+                if (canceledDrawTile) p.canceledDrawTile = canceledDrawTile;
               }
             } else if (action === 'gang') {
+              const seatMelds = bs.extraState.mahjongMelds[seat] || [];
+              let resolvedGangType: 'ming' | 'an' | 'bu' = 'ming';
+              if (p.gangType === 'bu') {
+                resolvedGangType = 'bu';
+              } else if (p.gangType === 'an') {
+                resolvedGangType = 'an';
+              } else if (p.gangType === 'an_or_bu') {
+                const hasMatchingPeng = Boolean(
+                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && m.tile.type === tile.type && m.tile.value === tile.value)
+                );
+                resolvedGangType = hasMatchingPeng ? 'bu' : 'an';
+              } else if (!p.isMingGang && p.fromSeat === undefined && !(bs.extraState.lastDiscarded && bs.extraState.lastDiscarded.discardBy !== seat)) {
+                const hasMatchingPeng = Boolean(
+                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && m.tile.type === tile.type && m.tile.value === tile.value)
+                );
+                resolvedGangType = hasMatchingPeng ? 'bu' : 'an';
+              }
+              p.gangType = resolvedGangType;
+
+              if (resolvedGangType === 'ming' && (!bs.extraState.lastDiscarded || (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined))) {
+                console.warn(`🛡️ [服务端拦截重复明杠] 席位 ${seat} 尝试明杠，但当前弃牌已被认领`);
+                return;
+              }
+
               let canceledDrawSeat: number | null = null;
-              if (p.isMingGang || (bs.extraState.lastDiscarded && bs.extraState.lastDiscarded.discardBy !== seat)) {
+              let canceledDrawTile: any = null;
+              if (resolvedGangType === 'ming' && (p.isMingGang || (bs.extraState.lastDiscarded && bs.extraState.lastDiscarded.discardBy !== seat))) {
                 if (bs.extraState.lastDrawnSeat !== null && bs.extraState.lastDrawnSeat !== undefined && bs.extraState.lastDrawnSeat !== seat) {
                   canceledDrawSeat = bs.extraState.lastDrawnSeat;
                   const dSeat = canceledDrawSeat;
-                  if ((room as any).deal?.seatCards?.[dSeat]?.length > 0) {
-                    const returned = (room as any).deal.seatCards[dSeat].pop();
+                  const drawnRef = bs.extraState.lastDrawnTile;
+                  const seatHand = (room as any).deal?.seatCards?.[dSeat];
+                  if (Array.isArray(seatHand) && seatHand.length > 0) {
+                    let returned: any = null;
+                    if (drawnRef?.id) {
+                      const idx = seatHand.findIndex((c: any) => c.id === drawnRef.id);
+                      if (idx >= 0) returned = seatHand.splice(idx, 1)[0];
+                    }
+                    if (!returned) returned = seatHand.pop();
                     if (returned && Array.isArray((room as any).deal.remainingWall)) {
                       (room as any).deal.remainingWall.unshift(returned);
+                      canceledDrawTile = returned;
                     }
                   }
-                  if (typeof bs.extraState.wallRemaining === 'number') {
+                  if (Array.isArray((room as any).deal?.remainingWall)) {
+                    bs.extraState.wallRemaining = (room as any).deal.remainingWall.length;
+                  } else if (typeof bs.extraState.wallRemaining === 'number') {
                     bs.extraState.wallRemaining++;
                   }
                   if (bs.handsCount && bs.handsCount[dSeat] > 0) {
-                    bs.handsCount[dSeat] = Math.max(0, bs.handsCount[dSeat] - 1);
+                    bs.handsCount[dSeat] = (room as any).deal?.seatCards?.[dSeat]?.length ?? Math.max(0, bs.handsCount[dSeat] - 1);
                   }
                   bs.extraState.lastDrawnSeat = null;
                   bs.extraState.lastDrawnTile = null;
                   console.log(`🛡️ [服务端明杠优先仲裁] 席位 ${seat} 明杠成功，席位 ${dSeat} 的抢跑摸牌已回滚入牌墙`);
                 }
               }
-              if (p.isMingGang && bs.extraState.mahjongDiscards.length > 0) {
-                const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => tile && d.id === tile.id);
-                if (fIdx >= 0) bs.extraState.mahjongDiscards.splice(fIdx, 1);
+
+              const removeNeeded = resolvedGangType === 'bu' ? 1 : (resolvedGangType === 'an' ? 4 : 3);
+              if ((room as any).deal?.seatCards?.[seat]) {
+                const sCards = (room as any).deal.seatCards[seat];
+                let removed = 0;
+                for (let i = sCards.length - 1; i >= 0 && removed < removeNeeded; i--) {
+                  if (tile && sCards[i].type === tile.type && sCards[i].value === tile.value) {
+                    sCards.splice(i, 1);
+                    removed++;
+                  }
+                }
+                while (removed < removeNeeded && sCards.length > 0) {
+                  sCards.pop();
+                  removed++;
+                }
               }
+              if (bs.handsCount && typeof bs.handsCount[seat] === 'number') {
+                bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - removeNeeded);
+              }
+
               if (!bs.extraState.mahjongMelds[seat]) bs.extraState.mahjongMelds[seat] = [];
-              bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile, seat, gangType: p.gangType || 'ming' });
-              if (bs.extraState.wallRemaining > 0) bs.extraState.wallRemaining--;
+              if (resolvedGangType === 'bu') {
+                const pengMeldIdx = bs.extraState.mahjongMelds[seat].findIndex(
+                  (m: any) => m.type === 'peng' && m.tile && tile && m.tile.type === tile.type && m.tile.value === tile.value
+                );
+                if (pengMeldIdx >= 0) {
+                  bs.extraState.mahjongMelds[seat][pengMeldIdx] = { type: 'gang', tile, seat, gangType: 'bu' };
+                } else {
+                  bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile, seat, gangType: 'bu' });
+                }
+              } else {
+                if (resolvedGangType === 'ming') {
+                  if (bs.extraState.mahjongDiscards.length > 0) {
+                    const lastIdx = bs.extraState.mahjongDiscards.length - 1;
+                    if (!tile || bs.extraState.mahjongDiscards[lastIdx].id === tile.id) {
+                      bs.extraState.mahjongDiscards.pop();
+                    } else {
+                      const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => d.id === tile.id);
+                      if (fIdx >= 0) bs.extraState.mahjongDiscards.splice(fIdx, 1);
+                    }
+                  }
+                  bs.extraState.lastDiscarded = null;
+                }
+                bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile, seat, gangType: resolvedGangType });
+              }
+
               if ((room as any).deal?.remainingWall?.length > 0) {
                 const supp = (room as any).deal.remainingWall.pop() || (room as any).deal.remainingWall.shift();
                 if (supp && (room as any).deal.seatCards?.[seat]) {
                   (room as any).deal.seatCards[seat].push(supp);
                 }
+                if (supp && bs.handsCount && typeof bs.handsCount[seat] === 'number') {
+                  bs.handsCount[seat] += 1;
+                }
+                p.suppTile = supp || null;
+                bs.extraState.lastDrawnSeat = seat;
+                bs.extraState.lastDrawnTile = supp || null;
               }
+              if (Array.isArray((room as any).deal?.remainingWall)) {
+                bs.extraState.wallRemaining = (room as any).deal.remainingWall.length;
+              } else if (bs.extraState.wallRemaining > 0) {
+                bs.extraState.wallRemaining--;
+              }
+              p.wallRemaining = bs.extraState.wallRemaining;
               if (!bs.seatKongScores) bs.seatKongScores = [0, 0, 0, 0];
               const targetOpp = p.fromSeat ?? p.targetSeat ?? p.discardBy;
-              if (typeof targetOpp === 'number' && targetOpp >= 0 && targetOpp !== seat) {
+              if (resolvedGangType === 'ming' && typeof targetOpp === 'number' && targetOpp >= 0 && targetOpp !== seat) {
                 bs.seatKongScores[seat] += 10;
                 bs.seatKongScores[targetOpp] -= 10;
               } else {
@@ -1784,6 +2044,7 @@ wss.on('connection', (ws) => {
               bs.extraState.pendingPengSeat = seat;
               if (canceledDrawSeat !== null) {
                 p.canceledDrawSeat = canceledDrawSeat;
+                if (canceledDrawTile) p.canceledDrawTile = canceledDrawTile;
               }
             } else if (action === 'pass') {
               if (p.nextTurn !== undefined) {
@@ -1792,6 +2053,7 @@ wss.on('connection', (ws) => {
               }
             } else if (action === 'hu') {
               executeMahjongWinSettlement(room, seat, Boolean(p.isFourHz), p);
+              return;
             }
           }
 
@@ -1832,6 +2094,14 @@ wss.on('connection', (ws) => {
             if (action === 'play') {
               if (combo?.cards) {
                 bs.extraState.playedCardsHistory.push(...combo.cards);
+                if (Array.isArray((room as any).deal?.seatCards?.[seat])) {
+                  const playedIds = new Set(combo.cards.map((c: any) => c.id));
+                  (room as any).deal.seatCards[seat] = (room as any).deal.seatCards[seat].filter((c: any) => !playedIds.has(c.id));
+                  bs.handsCount[seat] = (room as any).deal.seatCards[seat].length;
+                  if (bs.handsCount[seat] === 0 && !bs.finishedSeats.includes(seat)) {
+                    bs.finishedSeats.push(seat);
+                  }
+                }
               }
               bs.extraState.consecutivePasses = 0;
             } else if (action === 'pass') {
@@ -1897,6 +2167,9 @@ wss.on('connection', (ws) => {
             });
 
             if (submittedCount >= targetCount) {
+              room.players?.forEach((pl: any) => {
+                pl.isReady = false;
+              });
               const targetSceneRoom = sceneWaitingRooms.get(room.id);
               if (targetSceneRoom) {
                 targetSceneRoom.status = 'finished';
@@ -1936,6 +2209,10 @@ wss.on('connection', (ws) => {
           if (p.action === 'finish' || (p.winner !== undefined && p.winner !== null)) {
             bs.winnerSeat = p.winner !== undefined && p.winner !== null ? Number(p.winner) : null;
             bs.phase = 'ended';
+            room.status = 'finished';
+            room.players?.forEach((pl: any) => {
+              pl.isReady = false;
+            });
             if (p.finishedSeats && Array.isArray(p.finishedSeats)) {
               bs.finishedSeats = [...p.finishedSeats];
             }
@@ -2281,6 +2558,9 @@ setInterval(() => {
           const discTile = { ...discardedTile, discardBy: currentSeat };
           room.boardState.extraState.mahjongDiscards.push(discTile);
           room.boardState.extraState.lastDiscarded = discTile;
+          room.boardState.extraState.pendingPengSeat = null;
+          room.boardState.extraState.lastDrawnSeat = null;
+          room.boardState.extraState.lastDrawnTile = null;
 
           if (room.boardState.handsCount) {
             room.boardState.handsCount[currentSeat] = hand.length;
@@ -2314,34 +2594,103 @@ setInterval(() => {
           continue;
         }
 
-        // 4. 烟三超时出牌逻辑：逆时针严格旋转 (currentSeat - 1 + totalSeats) % totalSeats
+        // 4. 烟三超时出牌逻辑：逆时针严格旋转并跳过已出清玩家
         const totalSeats = room.boardState.handsCount?.length || 4;
-        const nextSeat = (currentSeat - 1 + totalSeats) % totalSeats;
+        const finished = Array.isArray(room.boardState.finishedSeats) ? room.boardState.finishedSeats : [];
+        let nextSeat = (currentSeat - 1 + totalSeats) % totalSeats;
+        let stepGuard = 0;
+        while (finished.includes(nextSeat) && stepGuard < totalSeats) {
+          nextSeat = (nextSeat - 1 + totalSeats) % totalSeats;
+          stepGuard++;
+        }
         room.turnSeat = nextSeat;
         room.boardState.turnSeat = nextSeat;
         room.boardState.updatedAt = now;
 
         const isYansanFirstMove = room.gameType === 'yansan' && (room.moveCount === 0 || !room.boardState.lastCombo);
         const isYansanLeadTurn = room.gameType === 'yansan' && (!room.boardState.lastCombo || room.boardState.lastCombo.seat === currentSeat);
+        const yansanSeatHand: any[] = Array.isArray((room as any).deal?.seatCards?.[currentSeat])
+          ? (room as any).deal.seatCards[currentSeat]
+          : [];
+        const yansanRankWeight = (rk: number) => (rk === 3 ? 13 : rk === 15 ? 12 : rk - 2);
+        const lastYansanCombo = room.boardState.lastCombo;
+        const canLastCardBeatSingle = (() => {
+          if (room.gameType !== 'yansan' || yansanSeatHand.length !== 1 || !lastYansanCombo || lastYansanCombo.seat === currentSeat) return false;
+          if (lastYansanCombo.type !== 'single') return false;
+          const card = yansanSeatHand[0];
+          const myPower = yansanRankWeight(card.rank || 4) * 10 + (card.suitVal || 1);
+          const targetCard = lastYansanCombo.cards?.[0];
+          const targetPower = targetCard
+            ? yansanRankWeight(targetCard.rank || 4) * 10 + (targetCard.suitVal || 1)
+            : (yansanRankWeight(lastYansanCombo.primaryRank || lastYansanCombo.rank || 4) * 10 + ((lastYansanCombo.primarySuitVal || lastYansanCombo.suitVal || 1) % 10 || 1));
+          return myPower > targetPower;
+        })();
 
-        if (isYansanFirstMove || isYansanLeadTurn) {
+        if (isYansanFirstMove || isYansanLeadTurn || canLastCardBeatSingle) {
           room.moveCount = (room.moveCount || 0) + 1;
           room.boardState.moveCount = room.moveCount;
           room.boardState.actionSeq = (room.boardState.actionSeq || 0) + 1;
           const isAbsoluteFirst = isYansanFirstMove && (room.moveCount === 1);
+
+          const seatHand = yansanSeatHand;
+          const rankWeight = yansanRankWeight;
+          let chosenCard: any = null;
+          if (seatHand.length > 0) {
+            if (isAbsoluteFirst) {
+              const d4Idx = seatHand.findIndex((c: any) => c.rank === 4 && (c.suit === '♦' || c.suitVal === 1));
+              if (d4Idx >= 0) {
+                chosenCard = seatHand.splice(d4Idx, 1)[0];
+              }
+            }
+            if (!chosenCard) {
+              let bestIdx = 0;
+              let bestPower = Infinity;
+              for (let idx = 0; idx < seatHand.length; idx++) {
+                const c = seatHand[idx];
+                const pwr = rankWeight(c.rank || 4) * 10 + (c.suitVal || 1);
+                if (pwr < bestPower) {
+                  bestPower = pwr;
+                  bestIdx = idx;
+                }
+              }
+              chosenCard = seatHand.splice(bestIdx, 1)[0];
+            }
+          }
+          const playedCard = chosenCard || {
+            id: isAbsoluteFirst ? 'd-4' : 'c-5',
+            rank: isAbsoluteFirst ? 4 : 5,
+            suitVal: isAbsoluteFirst ? 1 : 2,
+            label: isAbsoluteFirst ? '4' : '5',
+            suit: isAbsoluteFirst ? '♦' : '♣',
+            isRed: isAbsoluteFirst,
+          };
           const fallbackCombo = {
             type: 'single',
-            rank: isAbsoluteFirst ? 4 : 5,
-            suitVal: 1,
-            cards: [{ id: isAbsoluteFirst ? 'd-4' : 'c-5', rank: isAbsoluteFirst ? 4 : 5, suitVal: 1, label: isAbsoluteFirst ? '4' : '5', suit: isAbsoluteFirst ? '♦' : '♣', isRed: isAbsoluteFirst }],
-            label: isAbsoluteFirst ? '单张 ♦4' : '托管领出单牌',
-            primaryRank: isAbsoluteFirst ? 4 : 5,
-            primarySuitVal: 1,
+            rank: playedCard.rank,
+            suitVal: playedCard.suitVal || 1,
+            cards: [playedCard],
+            label: `单张 ${playedCard.suit || ''}${playedCard.label || playedCard.rank}`,
+            primaryRank: playedCard.rank,
+            primarySuitVal: yansanRankWeight(playedCard.rank || 4) * 10 + (playedCard.suitVal || 1),
             seat: currentSeat,
           };
           room.boardState.lastCombo = fallbackCombo;
-          if (room.boardState.handsCount && room.boardState.handsCount[currentSeat] > 0) {
-            room.boardState.handsCount[currentSeat] = Math.max(0, room.boardState.handsCount[currentSeat] - 1);
+          if (!room.boardState.extraState) room.boardState.extraState = {};
+          if (!room.boardState.extraState.playedCardsHistory) room.boardState.extraState.playedCardsHistory = [];
+          room.boardState.extraState.playedCardsHistory.push(playedCard);
+          room.boardState.extraState.consecutivePasses = 0;
+          if (!room.boardState.discardsHistory) room.boardState.discardsHistory = [];
+          room.boardState.discardsHistory.push(fallbackCombo);
+          if (room.boardState.handsCount) {
+            if (Array.isArray((room as any).deal?.seatCards?.[currentSeat])) {
+              room.boardState.handsCount[currentSeat] = seatHand.length;
+            } else if (room.boardState.handsCount[currentSeat] > 0) {
+              room.boardState.handsCount[currentSeat] = Math.max(0, room.boardState.handsCount[currentSeat] - 1);
+            }
+            if (room.boardState.handsCount[currentSeat] === 0 && !finished.includes(currentSeat)) {
+              if (!room.boardState.finishedSeats) room.boardState.finishedSeats = [];
+              room.boardState.finishedSeats.push(currentSeat);
+            }
           }
           broadcast({
             type: 'game_event',
@@ -2354,7 +2703,8 @@ setInterval(() => {
               combo: fallbackCombo,
               cardsCount: 1,
               nextTurn: nextSeat,
-              reason: isAbsoluteFirst ? 'timeout_first_move_diamond4' : 'timeout_lead_single',
+              finishedSeats: room.boardState.finishedSeats,
+              reason: isAbsoluteFirst ? 'timeout_first_move_diamond4' : (canLastCardBeatSingle ? 'baodan_auto_beat' : 'timeout_lead_single'),
             },
             payload: {
               action: 'play',
@@ -2363,12 +2713,22 @@ setInterval(() => {
               combo: fallbackCombo,
               cardsCount: 1,
               nextTurn: nextSeat,
-              reason: isAbsoluteFirst ? 'timeout_first_move_diamond4' : 'timeout_lead_single',
+              finishedSeats: room.boardState.finishedSeats,
+              reason: isAbsoluteFirst ? 'timeout_first_move_diamond4' : (canLastCardBeatSingle ? 'baodan_auto_beat' : 'timeout_lead_single'),
             },
             moveCount: room.moveCount,
             boardState: room.boardState,
           });
         } else {
+          if (!room.boardState.extraState) room.boardState.extraState = {};
+          room.boardState.extraState.consecutivePasses = (room.boardState.extraState.consecutivePasses || 0) + 1;
+          const activeCount = Math.max(1, totalSeats - finished.length);
+          const lastLeader = room.boardState.lastCombo?.seat;
+          const leaderFinished = lastLeader !== undefined && finished.includes(lastLeader);
+          const passThreshold = leaderFinished ? activeCount : Math.max(1, activeCount - 1);
+          if (room.boardState.extraState.consecutivePasses >= passThreshold) {
+            room.boardState.lastCombo = null;
+          }
           broadcast({
             type: 'game_event',
             roomId: room.id,

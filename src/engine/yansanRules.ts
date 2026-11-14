@@ -1403,6 +1403,7 @@ function findMinimumEffectiveBeat(
           getYansanRankWeight(ca.rank) - getYansanRankWeight(cb.rank)
         );
       });
+      return winning5s[0];
     }
   }
 

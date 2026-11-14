@@ -756,7 +756,7 @@ watch(() => props.sceneMode, () => {
   dealNewMatch();
 });
 
-watch([() => props.initialDeal, () => props.roomPlayers], ([deal]) => {
+watch(() => props.initialDeal, (deal) => {
   if (props.isPracticeMode) return;
   if (deal && deal.seatCards) {
     const dealIdentifier = deal.dealId || deal.createdAt || (Array.isArray(deal.seatCards[0]) ? deal.seatCards[0].map((c: any) => c.id).join('-') : '');
@@ -785,6 +785,10 @@ const isEightPlayer = computed(() => {
 
 const isBookingScene = computed(() => {
   return props.sceneMode === 'four-booking' || props.sceneMode === 'eight-booking';
+});
+
+const totalSeatsCount = computed(() => {
+  return isEightPlayer.value ? 8 : 4;
 });
 
 const currentSceneLabel = computed(() => {
@@ -838,7 +842,8 @@ const isAllOtherPlayersBots = computed(() => {
   if (props.isPracticeMode) return true;
   if (!props.roomPlayers || props.roomPlayers.length === 0) return true;
   return props.roomPlayers.every((p: any, idx: number) => {
-    if (idx === 0) return true;
+    const seatNum = typeof p?.seat === 'number' ? p.seat : idx;
+    if (seatNum === mySeat.value) return true;
     return !p || p.isAi || p.isSimulated || p.isBot || p.id?.startsWith('BOT-') || p.id?.startsWith('sim-');
   });
 });
@@ -849,7 +854,8 @@ const readyPlayersCount = computed(() => {
   if (!props.roomPlayers || props.roomPlayers.length === 0) return hasClickedReady.value ? total : 1;
   const count = props.roomPlayers.filter((p: any, idx: number) => {
     if (!p || p.isAi || p.isSimulated || p.isBot || p.id?.startsWith('BOT-') || p.id?.startsWith('sim-')) return true;
-    if (idx === mySeat.value) return hasClickedReady.value || Boolean(p.isReady);
+    const seatNum = typeof p?.seat === 'number' ? p.seat : idx;
+    if (seatNum === mySeat.value) return hasClickedReady.value || Boolean(p.isReady);
     return Boolean(p.isReady);
   }).length;
   return Math.min(total, Math.max(1, count));
@@ -1079,7 +1085,9 @@ const myTierBonuses = computed(() => {
 const allShowdownPlayers = computed<ShowdownPlayer[]>(() => {
   const list: ShowdownPlayer[] = [];
 
-  // 1. 本家 (我) - Seat 0
+  // 1. 本家 (我)
+  const totalSeats = isEightPlayer.value ? 8 : 4;
+  const oppSeats = Array.from({ length: totalSeats }, (_, s) => s).filter((s) => s !== mySeat.value);
   const myCardsSSS = [...frontTier.value, ...midTier.value, ...backTier.value].map(toSSSCard);
   const mySpecial = detectSpecialHand(myCardsSSS);
   const myFoul = isFoulHand(
@@ -1089,10 +1097,10 @@ const allShowdownPlayers = computed<ShowdownPlayer[]>(() => {
   );
 
   list.push({
-    seat: 0,
+    seat: mySeat.value,
     name: '我 (本家)',
     isMe: true,
-    avatar: '👑',
+    avatar: props.currentUser?.avatar || '👑',
     front: frontTier.value,
     mid: midTier.value,
     back: backTier.value,
@@ -1107,20 +1115,21 @@ const allShowdownPlayers = computed<ShowdownPlayer[]>(() => {
   });
 
   // 2. 对手席位
-  const bNames = props.roomPlayers && props.roomPlayers.length > 1
-    ? props.roomPlayers.slice(1).map((p: any, idx: number) => {
-        const prefix = isEightPlayer.value ? `席位${idx + 2}` : ['西席', '北席', '东席'][idx] || `牌友${idx + 2}`;
-        return `${prefix} (${p.name})`;
-      })
-    : (isEightPlayer.value
-        ? ['一席 (牌友)', '二席 (牌友)', '三席 (牌友)', '四席 (牌友)', '五席 (牌友)', '六席 (牌友)', '七席 (牌友)']
-        : ['西席 (牌友)', '北席 (牌友)', '东席 (牌友)']);
+  const fallbackNames = isEightPlayer.value
+    ? ['一席 (牌友)', '二席 (牌友)', '三席 (牌友)', '四席 (牌友)', '五席 (牌友)', '六席 (牌友)', '七席 (牌友)']
+    : ['西席 (牌友)', '北席 (牌友)', '东席 (牌友)'];
 
   const count = botHands.value.length;
   for (let i = 0; i < count; i++) {
-    const opp = botHands.value[i];
+    const oppSeat = oppSeats[i] ?? (i + 1);
+    const rem = remoteSubmittedHands.value.get(oppSeat);
+    const opp = (rem && rem.front && rem.mid && rem.back) ? rem : botHands.value[i];
     const oppInfo = opponentsBreakdown.value[i];
     if (!opp) continue;
+
+    const rp = props.roomPlayers?.find((p: any, idx: number) => (typeof p?.seat === 'number' ? p.seat : idx) === oppSeat) || props.roomPlayers?.[oppSeat];
+    const prefix = isEightPlayer.value ? `席位${oppSeat + 1}` : (['本家', '西席', '北席', '东席'][oppSeat] || `牌友${oppSeat + 1}`);
+    const displayName = rp?.name ? `${prefix} (${rp.name})` : (fallbackNames[i] || `牌友${oppSeat + 1}`);
 
     const oppCardsSSS = [...opp.front, ...opp.mid, ...opp.back].map(toSSSCard);
     const oppSpecial = detectSpecialHand(oppCardsSSS);
@@ -1131,10 +1140,10 @@ const allShowdownPlayers = computed<ShowdownPlayer[]>(() => {
     );
 
     list.push({
-      seat: i + 1,
-      name: bNames[i] || `牌友${i + 1}`,
+      seat: oppSeat,
+      name: displayName,
       isMe: false,
-      avatar: props.roomPlayers?.[i + 1]?.avatar || '👤',
+      avatar: rp?.avatar || '👤',
       front: opp.front,
       mid: opp.mid,
       back: opp.back,
@@ -1142,9 +1151,9 @@ const allShowdownPlayers = computed<ShowdownPlayer[]>(() => {
       isShot: Boolean(oppInfo?.isShot),
       isFoul: oppFoul && !oppSpecial,
       specialHand: oppSpecial,
-      frontLabel: getHandLabel(opp.front),
-      midLabel: getHandLabel(opp.mid),
-      backLabel: getHandLabel(opp.back),
+      frontLabel: getHandLabel(opp.front, 3),
+      midLabel: getHandLabel(opp.mid, 5),
+      backLabel: getHandLabel(opp.back, 5),
       tiersDetail: oppInfo?.tiers,
       summary: oppInfo?.summary,
     });
@@ -1726,6 +1735,7 @@ function dealNewMatch(forceReApply = false, overrideDeal?: any) {
           clearInterval(arrangeTimer);
           arrangeTimer = null;
         }
+        const isMultiplayerRealtime = !props.isPracticeMode && Boolean(props.ws) && !isBookingScene.value;
         if (!hasCompared.value) {
           if (!isWaitingShowdown.value) {
             if (!isSetComplete.value) {
@@ -1733,7 +1743,9 @@ function dealNewMatch(forceReApply = false, overrideDeal?: any) {
             }
             handleCompare();
           }
-          executeShowdown();
+          if (!isMultiplayerRealtime || submittedSeats.value.size >= totalSeatsCount.value) {
+            executeShowdown();
+          }
         }
       }
     }, 1000);
@@ -1841,13 +1853,10 @@ function onRestartGame() {
         type: 'scene_player_ready',
         roomId: props.roomId,
         playerId: props.currentUser?.id,
-        isReady: true,
-      }));
-      props.ws.send(JSON.stringify({
-        type: 'room_restart',
-        roomId: props.roomId,
+        playerName: props.currentUser?.name,
         gameType: 'shisanshui',
         sceneMode: props.sceneMode,
+        isReady: true,
       }));
     } catch {}
   }
@@ -2065,9 +2074,14 @@ function drawBoard() {
   const dpr = window.devicePixelRatio || 1;
   const width = tableWidthPx.value;
   const height = tableHeightPx.value;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
+  const targetW = Math.round(width * dpr);
+  const targetH = Math.round(height * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
 
   // Background with luxury sapphire table felt gradient
   const highlight = props.tableTheme?.highlightColor || '#F8FAFC';
@@ -2679,14 +2693,16 @@ function executeShowdown() {
     ? ['一席 (罗宋巧手)', '二席 (十三飞龙)', '三席 (七星居士)', '四席 (青龙剑客)', '五席 (百花仙子)', '六席 (金牌赌神)', '七席 (八方豪侠)']
     : ['西席 (罗宋巧手)', '北席 (十三飞龙)', '东席 (七星居士)'];
 
-  const oppCount = isEightPlayer.value ? 7 : 3;
+  const totalSeats = isEightPlayer.value ? 8 : 4;
+  const oppSeats = Array.from({ length: totalSeats }, (_, s) => s).filter((s) => s !== mySeat.value);
+  const oppCount = oppSeats.length;
   let totalNet = 0;
   let wonOpponentCount = 0;
   let shotCount = 0;
   const oppResults = [];
 
   for (let i = 0; i < oppCount; i++) {
-    const oppSeat = i + 1;
+    const oppSeat = oppSeats[i];
     let oppFront = botHands.value[i]?.front || [];
     let oppMid = botHands.value[i]?.mid || [];
     let oppBack = botHands.value[i]?.back || [];
@@ -2707,9 +2723,10 @@ function executeShowdown() {
       tail: oppBack.map(toSSSCard),
     };
 
-    const oppDisplayName = props.roomPlayers?.[oppSeat]?.name
-      ? `${bNames[i] || `牌友${oppSeat}`} (${props.roomPlayers[oppSeat].name})`
-      : (bNames[i] || `牌友${oppSeat}`);
+    const rp = props.roomPlayers?.find((p: any, idx: number) => (typeof p?.seat === 'number' ? p.seat : idx) === oppSeat) || props.roomPlayers?.[oppSeat];
+    const oppDisplayName = rp?.name
+      ? `${bNames[i] || `牌友${oppSeat + 1}`} (${rp.name})`
+      : (bNames[i] || `牌友${oppSeat + 1}`);
 
     const vsResult = compareTwoPlayers(myHand, oppHand, oppSeat, oppDisplayName);
     if (vsResult.finalWater > 0) wonOpponentCount++;
@@ -2726,7 +2743,7 @@ function executeShowdown() {
       summary: vsResult.summary,
       specialMe: vsResult.specialMe,
       specialOpp: vsResult.specialOpp,
-      handSummary: `头:${getHandLabel(oppFront)} 中:${getHandLabel(oppMid)} 尾:${getHandLabel(oppBack)}`,
+      handSummary: `头:${getHandLabel(oppFront, 3)} 中:${getHandLabel(oppMid, 5)} 尾:${getHandLabel(oppBack, 5)}`,
     });
     totalNet += vsResult.finalWater;
   }
@@ -2761,7 +2778,12 @@ function executeShowdown() {
   if (totalNet > 0) {
     haptics.victory();
   }
-  emit('move', { score: totalScore.value, winner: totalNet > 0 ? 0 : (totalNet === 0 ? -1 : 1) });
+  emit('move', {
+    seat: mySeat.value,
+    score: totalScore.value,
+    winner: totalNet > 0 ? mySeat.value : (totalNet === 0 ? -1 : (oppSeats[0] ?? 1)),
+    skipWs: !props.isPracticeMode && Boolean(props.ws) && !isBookingScene.value,
+  });
 }
 
 function handleCompare() {
@@ -2896,6 +2918,18 @@ function onWsMessage(ev: MessageEvent) {
   } catch {}
 }
 
+watch(() => props.ws, (newWs, oldWs) => {
+  if (oldWs) {
+    try { oldWs.removeEventListener('message', onWsMessage); } catch {}
+  }
+  if (newWs) {
+    try {
+      newWs.removeEventListener('message', onWsMessage);
+      newWs.addEventListener('message', onWsMessage);
+    } catch {}
+  }
+});
+
 onMounted(() => {
   cleanupCardLoader = onCardAssetsLoaded(() => {
     nextTick(() => drawBoard());
@@ -2923,6 +2957,7 @@ onBeforeUnmount(() => {
   if (bookingTimer) clearInterval(bookingTimer);
   if (graceTimer) clearInterval(graceTimer);
   if (arrangeTimer) clearInterval(arrangeTimer);
+  if (toastTimer) clearTimeout(toastTimer);
   if (props.ws) {
     props.ws.removeEventListener('message', onWsMessage);
   }

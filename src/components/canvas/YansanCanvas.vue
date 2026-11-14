@@ -649,6 +649,32 @@ function emitStatus() {
   });
 }
 
+function sendGameMove(action: string, extraPayload: any = {}) {
+  if (!props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN && props.roomId) {
+    try {
+      props.ws.send(
+        JSON.stringify({
+          type: 'game_move',
+          roomId: props.roomId,
+          seat: mySeat.value,
+          payload: {
+            action,
+            seat: mySeat.value,
+            absSeat: mySeat.value,
+            ...extraPayload,
+          },
+          event: {
+            action,
+            seat: mySeat.value,
+            absSeat: mySeat.value,
+            ...extraPayload,
+          },
+        })
+      );
+    } catch {}
+  }
+}
+
 watch(() => props.tableTheme, () => {
   drawTable();
 });
@@ -692,7 +718,8 @@ const isAllOtherPlayersBots = computed(() => {
   if (props.isPracticeMode) return true;
   if (!props.roomPlayers || props.roomPlayers.length === 0) return true;
   return props.roomPlayers.every((p: any, idx: number) => {
-    if (idx === 0) return true;
+    const seatNum = typeof p?.seat === 'number' ? p.seat : idx;
+    if (seatNum === mySeat.value) return true;
     return !p || p.isAi || p.isSimulated || p.isBot || p.id?.startsWith('BOT-') || p.id?.startsWith('sim-');
   });
 });
@@ -702,7 +729,8 @@ const readyPlayersCount = computed(() => {
   if (!props.roomPlayers || props.roomPlayers.length === 0) return hasClickedReady.value ? 4 : 1;
   const count = props.roomPlayers.filter((p: any, idx: number) => {
     if (!p || p.isAi || p.isSimulated || p.isBot || p.id?.startsWith('BOT-') || p.id?.startsWith('sim-')) return true;
-    if (idx === 0) return hasClickedReady.value || Boolean(p.isReady);
+    const seatNum = typeof p?.seat === 'number' ? p.seat : idx;
+    if (seatNum === mySeat.value) return hasClickedReady.value || Boolean(p.isReady);
     return Boolean(p.isReady);
   }).length;
   return Math.min(4, Math.max(1, count));
@@ -749,24 +777,31 @@ let baodanTimer: any = null;
 const baodanAlertedSeats = reactive(new Set<number>());
 
 function checkAndTriggerBaoDan(seat: number) {
-  if (hands[seat].length === 1 && !baodanAlertedSeats.has(seat) && !finishedSeats.includes(seat)) {
-    baodanAlertedSeats.add(seat);
-    const names = ['本家', '西席', '北席', '东席'];
-    const seatName = names[seat];
-    baodanNotice.value = seat === mySeat.value
-      ? '🚨 警报：您已报单（仅剩最后 1 张手牌）！'
-      : `🚨 警报：【${seatName}】已报单（仅剩 1 张手牌）！`;
-    if (baodanTimer) clearTimeout(baodanTimer);
-    baodanTimer = setTimeout(() => {
-      baodanNotice.value = '';
-    }, 3200);
-
-    if (seat === mySeat.value) {
-      soundFX.speakAction('baodan_self');
-    } else {
-      soundFX.speakVoice(`${seatName}报单，只剩一张牌！`);
+  if (hands[seat].length === 1 && !finishedSeats.includes(seat)) {
+    if (seat === mySeat.value && !isAutoHost.value) {
+      isAutoHost.value = true;
+      sendGameMove('set_auto_host', { isAutoManaged: true });
+      emitStatus();
     }
-    haptics.tap();
+    if (!baodanAlertedSeats.has(seat)) {
+      baodanAlertedSeats.add(seat);
+      const names = ['本家', '西席', '北席', '东席'];
+      const seatName = names[seat];
+      baodanNotice.value = seat === mySeat.value
+        ? '🚨 警报：您已报单（仅剩最后 1 张手牌，已自动进入托管）！'
+        : `🚨 警报：【${seatName}】已报单（仅剩 1 张手牌）！`;
+      if (baodanTimer) clearTimeout(baodanTimer);
+      baodanTimer = setTimeout(() => {
+        baodanNotice.value = '';
+      }, 3200);
+
+      if (seat === mySeat.value) {
+        soundFX.speakAction('baodan_self');
+      } else {
+        soundFX.speakVoice(`${seatName}报单，只剩一张牌！`);
+      }
+      haptics.tap();
+    }
   }
 }
 const isQiangGongActive = ref(false);
@@ -994,8 +1029,12 @@ function startPulseLoop() {
 
 const isAutoHost = ref(false);
 let autoHostTimer: any = null;
+let autoHostExecTimer: any = null;
 let playerAutoTimer: any = null;
 let remoteWatchdogTimer: any = null;
+let dealingCeremonyTimer: any = null;
+let baodanDelayedTimer: any = null;
+let passClearTimer: any = null;
 const turnCountdown = ref(60);
 let countdownInterval: any = null;
 
@@ -1088,11 +1127,74 @@ function startTurnCountdown() {
 }
 
 /**
+ * 报单自动托管中枢：
+ * 当玩家仅剩最后 1 张手牌时自动进入托管状态：
+ * - 领牌回合或能压制桌面单张时：自动直接打出最后一张牌完成出清；
+ * - 无法压制桌面牌型（更大单张或对子/三条/五张）时：自动过牌。
+ */
+function triggerSingleCardAutoTurn(): boolean {
+  if (turnSeat.value !== mySeat.value || winnerSeat.value !== null) return false;
+  const myHand = hands[mySeat.value] || [];
+  if (myHand.length !== 1) return false;
+
+  if (!isAutoHost.value) {
+    isAutoHost.value = true;
+    sendGameMove('set_auto_host', { isAutoManaged: true });
+  }
+  stopTurnCountdown();
+  if (autoHostTimer) {
+    clearTimeout(autoHostTimer);
+    autoHostTimer = null;
+  }
+  if (autoHostExecTimer) {
+    clearTimeout(autoHostExecTimer);
+    autoHostExecTimer = null;
+  }
+  if (playerAutoTimer) {
+    clearTimeout(playerAutoTimer);
+    playerAutoTimer = null;
+  }
+
+  const lastCard = myHand[0];
+  const isLeadTurn = !lastCombo.value || lastCombo.value.seat === mySeat.value;
+  const targetCombo = !isLeadTurn ? lastCombo.value : null;
+  const singleCombo = evaluateCombo([lastCard], mySeat.value);
+  const canPlayToWin = Boolean(singleCombo && (!targetCombo || canBeat(singleCombo, targetCombo)));
+
+  if (canPlayToWin) {
+    seatStatus[mySeat.value] = isLeadTurn
+      ? '🚨 报单托管 · 自动打出最后一张牌...'
+      : '🚨 报单托管 · 能压制直接出清...';
+    drawTable();
+    emitStatus();
+    playerAutoTimer = setTimeout(() => {
+      if (winnerSeat.value === null && turnSeat.value === mySeat.value && (hands[mySeat.value]?.length || 0) === 1) {
+        executeBaoDanPlay(mySeat.value);
+      }
+    }, 650);
+  } else {
+    const targetLength = targetCombo?.cards?.length || 1;
+    seatStatus[mySeat.value] = targetLength > 1
+      ? `余牌不足${targetLength}张 · 自动点过`
+      : '报单无法压制 · 自动点过';
+    drawTable();
+    emitStatus();
+    playerAutoTimer = setTimeout(() => {
+      if (winnerSeat.value === null && turnSeat.value === mySeat.value && lastCombo.value && lastCombo.value.seat !== mySeat.value && (hands[mySeat.value]?.length || 0) === 1) {
+        handlePass();
+      }
+    }, 700);
+  }
+
+  return true;
+}
+
+/**
  * 玩家智能自动响应中枢：
- * 1. 报单出牌权：当本家打出一手牌后报单(余1张)且获得连续出牌权(全场要不起/绝大)，自动将最后一张单牌打出出清！
- * 2. 张数不足自动点过：当对手打出5张牌型(顺子/同花/俘虏等)而本家余牌不足5张(如剩3张)，物理上绝对无法出牌，自动点过！
- * 3. 全场绝大自动点过：当对手打出全场绝大牌型（公开推理全场无人可压）时，自动点过！
- * 4. 普通要不起严禁自动点过：若对手打出的并非全场绝大且本家张数足够，即使要不起也不自动点过，防止泄露要不起牌讯！
+ * 1. 报单自动托管：剩1张牌时自动托管，能压制直接出清，不能压制自动过；
+ * 2. 张数不足自动点过：当对手打出多张牌型而本家余牌不足时，自动点过；
+ * 3. 全场绝大自动点过：当对手打出全场绝大牌型（公开推理全场无人可压）时，自动点过；
+ * 4. 普通要不起严禁自动点过：若手牌大于1张且对手非绝大、张数足够，保留手动操作防止泄密。
  */
 function checkPlayerAutoTurnActions(): boolean {
   if (turnSeat.value !== mySeat.value || winnerSeat.value !== null) return false;
@@ -1101,24 +1203,8 @@ function checkPlayerAutoTurnActions(): boolean {
   const myCount = myHand.length;
   if (myCount === 0) return false;
 
-  // 1. 领牌 / 连续出牌权分支：
-  // 桌面无牌（上一轮对手全部过牌），或者上一手牌就是本家出的（绝大连出）
-  const isLeadTurn = !lastCombo.value || lastCombo.value.seat === mySeat.value;
-  if (isLeadTurn) {
-    // 若手牌仅剩最后 1 张（报单）：玩家拥有连续出牌权，手中只有这唯一一张牌，自动打出出清！
-    if (myCount === 1) {
-      stopTurnCountdown();
-      seatStatus[mySeat.value] = '🚨 报单绝杀 · 自动打出最后一张牌...';
-      drawTable();
-      emitStatus();
-      playerAutoTimer = setTimeout(() => {
-        if (turnSeat.value === mySeat.value && (!lastCombo.value || lastCombo.value.seat === mySeat.value) && (hands[mySeat.value]?.length || 0) === 1) {
-          executeBaoDanPlay(mySeat.value);
-        }
-      }, 700);
-      return true;
-    }
-    return false;
+  if (myCount === 1) {
+    return triggerSingleCardAutoTurn();
   }
 
   // 2. 跟牌压制分支：桌上有其他玩家打出的待压制牌型
@@ -1132,6 +1218,7 @@ function checkPlayerAutoTurnActions(): boolean {
       seatStatus[mySeat.value] = `余牌不足${targetLength}张 · 自动点过`;
       drawTable();
       emitStatus();
+      if (playerAutoTimer) clearTimeout(playerAutoTimer);
       playerAutoTimer = setTimeout(() => {
         if (turnSeat.value === mySeat.value && lastCombo.value && lastCombo.value.seat !== mySeat.value && (hands[mySeat.value]?.length || 0) < lastCombo.value.cards.length) {
           handlePass();
@@ -1170,6 +1257,7 @@ function checkPlayerAutoTurnActions(): boolean {
       seatStatus[mySeat.value] = '全场绝大 · 自动点过';
       drawTable();
       emitStatus();
+      if (playerAutoTimer) clearTimeout(playerAutoTimer);
       playerAutoTimer = setTimeout(() => {
         if (turnSeat.value === mySeat.value && lastCombo.value && lastCombo.value.seat !== mySeat.value) {
           handlePass();
@@ -1226,6 +1314,9 @@ function toggleAutoHost() {
 
 function checkAutoHostTurn() {
   if (!isAutoHost.value || turnSeat.value !== mySeat.value || winnerSeat.value !== null) return;
+  if ((hands[mySeat.value]?.length || 0) === 1 && triggerSingleCardAutoTurn()) {
+    return;
+  }
   if (autoHostTimer) clearTimeout(autoHostTimer);
 
   seatStatus[mySeat.value] = '⚡ 托管思考出牌中...';
@@ -1350,7 +1441,8 @@ function checkAutoHostTurn() {
       playCards.forEach((c) => selectedIds.add(c.id));
       drawTable();
 
-      setTimeout(() => {
+      if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
+      autoHostExecTimer = setTimeout(() => {
         if (!isAutoHost.value || turnSeat.value !== mySeat.value || winnerSeat.value !== null) return;
         selectedIds.clear();
         playCards!.forEach((c) => selectedIds.add(c.id));
@@ -1456,7 +1548,8 @@ const lastAppliedDealId = ref<string>('');
 function triggerDealingCeremony() {
   isDealingCeremony.value = true;
   try { soundFX.playCardsShort?.(); } catch {}
-  setTimeout(() => {
+  if (dealingCeremonyTimer) clearTimeout(dealingCeremonyTimer);
+  dealingCeremonyTimer = setTimeout(() => {
     isDealingCeremony.value = false;
   }, 1400);
 }
@@ -1478,7 +1571,8 @@ function saveLocalSnapshot() {
     clearLocalSnapshot();
     return;
   }
-  if (!hands[0] || hands[0].length === 0) return;
+  const curMySeat = mySeat.value;
+  if (!hands[curMySeat] || hands[curMySeat].length === 0) return;
 
   try {
     const snap = {
@@ -1512,7 +1606,8 @@ function tryRestoreLocalSnapshot(): boolean {
     const raw = localStorage.getItem(`yansan_table_snapshot_${roomId}`) || localStorage.getItem('yansan_table_snapshot_latest');
     if (!raw) return false;
     const snap = JSON.parse(raw);
-    if (!snap || !Array.isArray(snap.hands) || !snap.hands[0] || snap.hands[0].length === 0) return false;
+    const curMySeat = mySeat.value;
+    if (!snap || !Array.isArray(snap.hands) || !snap.hands[curMySeat] || snap.hands[curMySeat].length === 0) return false;
     if (Date.now() - (snap.timestamp || 0) > 2 * 3600 * 1000) {
       clearLocalSnapshot();
       return false;
@@ -1541,7 +1636,7 @@ function tryRestoreLocalSnapshot(): boolean {
 
     isDealingCeremony.value = false;
     drawTable();
-    console.log(`🎴 [烟三断线重连] 瞬时恢复牌局状态：手牌 ${hands[0].length} 张，已出历史 ${playedCardsHistory.value.length} 张`);
+    console.log(`🎴 [烟三断线重连] 瞬时恢复牌局状态：手牌 ${hands[mySeat.value].length} 张，已出历史 ${playedCardsHistory.value.length} 张`);
     return true;
   } catch (err) {
     console.warn('[Yansan Snapshot Restore Error]', err);
@@ -1620,21 +1715,34 @@ function handleReconnectSync(msg: any) {
   }
   drawTable();
   saveLocalSnapshot();
+  if (winnerSeat.value === null && turnSeat.value === mySeat.value && (hands[mySeat.value]?.length || 0) === 1) {
+    triggerSingleCardAutoTurn();
+  }
 }
 
 function applyDeal(deal: any, forceReApply = false) {
   if (!deal || !deal.seatCards) return;
 
+  const curMySeat = mySeat.value;
   const dealIdentifier = deal.dealId || deal.createdAt || (Array.isArray(deal.seatCards[0]) ? deal.seatCards[0].map((c: any) => c.id).join('-') : '');
-  if (!forceReApply && lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier && initialHands[0] && initialHands[0].length > 0) {
+  if (!forceReApply && lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier && initialHands[curMySeat] && initialHands[curMySeat].length > 0) {
     console.log(`🛡️ [烟三网络波动防重刷] 发牌 ${dealIdentifier} 已在桌上执行，跳过重复洗牌与重置`);
     return;
   }
 
   lastAppliedDealId.value = dealIdentifier;
+  isAutoHost.value = false;
+  if (autoHostTimer) {
+    clearTimeout(autoHostTimer);
+    autoHostTimer = null;
+  }
   triggerDealingCeremony();
   if (animFrameId) cancelAnimationFrame(animFrameId);
   if (botTimer) clearTimeout(botTimer);
+  if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
+  if (remoteWatchdogTimer) clearTimeout(remoteWatchdogTimer);
+  if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
+  if (passClearTimer) clearTimeout(passClearTimer);
   if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
   if (danmakuTimer) clearTimeout(danmakuTimer);
   danmakuText.value = '';
@@ -1712,6 +1820,10 @@ function dealNewMatch() {
   triggerDealingCeremony();
   if (animFrameId) cancelAnimationFrame(animFrameId);
   if (botTimer) clearTimeout(botTimer);
+  if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
+  if (remoteWatchdogTimer) clearTimeout(remoteWatchdogTimer);
+  if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
+  if (passClearTimer) clearTimeout(passClearTimer);
   if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
   if (danmakuTimer) clearTimeout(danmakuTimer);
   danmakuText.value = '';
@@ -1818,13 +1930,10 @@ function onRestartGame() {
         type: 'scene_player_ready',
         roomId: props.roomId,
         playerId: props.currentUser?.id,
-        isReady: true,
-      }));
-      props.ws.send(JSON.stringify({
-        type: 'room_restart',
-        roomId: props.roomId,
+        playerName: props.currentUser?.name,
         gameType: 'yansan',
         sceneMode: props.sceneMode,
+        isReady: true,
       }));
     } catch {}
   }
@@ -1834,7 +1943,7 @@ watch(() => props.initialDeal, (newDeal) => {
   if (props.isPracticeMode) return;
   if (newDeal?.seatCards) {
     const dealIdentifier = newDeal.dealId || newDeal.createdAt || (Array.isArray(newDeal.seatCards[0]) ? newDeal.seatCards[0].map((c: any) => c.id).join('-') : '');
-    if (hands[0] && hands[0].length > 0 && lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier) {
+    if (hands[mySeat.value] && hands[mySeat.value].length > 0 && lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier) {
       console.log('🛡️ [烟三防重置] 正在对局中且发牌一致，保持当前牌桌手牌与出牌历史');
       return;
     }
@@ -2620,6 +2729,13 @@ function executeBaoDanPlay(seat: number) {
   const remainingCard = hands[seat][0];
   const cb = evaluateCombo([remainingCard], seat);
   if (!cb) return;
+  if (lastCombo.value && lastCombo.value.seat !== seat && !canBeat(cb, lastCombo.value)) {
+    return;
+  }
+  if (seat === mySeat.value) {
+    selectedIds.clear();
+  }
+  isFirstTurn.value = false;
   hands[seat] = [];
   lastCombo.value = cb;
   consecutivePasses.value = 0;
@@ -2779,7 +2895,7 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
       for (let i = 0; i < 4; i++) {
         if (i !== seat && !finishedSeats.includes(i)) {
           seatStatus[i] = i === nextS
-            ? (nextS === 0 ? '👑 上家绝大出清 · 准备接风领出...' : `👑 【${names[nextS]}】准备接风领出...`)
+            ? (nextS === mySeat.value ? '👑 上家绝大出清 · 准备接风领出...' : `👑 【${names[nextS]}】准备接风领出...`)
             : '要不起 (全场绝大)';
         }
       }
@@ -2903,7 +3019,8 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
         seatStatus[seat] = `🚨 报单绝杀 · 【${names[seat]}】准备打出最后一张牌...`;
         drawTable();
         emitStatus();
-        setTimeout(() => {
+        if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
+        baodanDelayedTimer = setTimeout(() => {
           executeBaoDanPlay(seat);
         }, 1800);
         return;
@@ -3071,7 +3188,8 @@ function executePassFlow(seat: number, isRemote: boolean = false) {
     drawTable();
     emitStatus();
 
-    setTimeout(() => {
+    if (passClearTimer) clearTimeout(passClearTimer);
+    passClearTimer = setTimeout(() => {
       if (winnerSeat.value !== null) return;
       lastCombo.value = null;
       for (const s of activeSeats) {
@@ -3091,15 +3209,8 @@ function executePassFlow(seat: number, isRemote: boolean = false) {
         } else if (isSeatBot(leadSeat)) {
           runBotTurns(leadSeat);
         }
-      } else if ((hands[mySeat.value]?.length || 0) === 1) {
-        seatStatus[mySeat.value] = '🚨 报单绝杀 · 自动打出最后一张牌...';
-        drawTable();
-        emitStatus();
-        playerAutoTimer = setTimeout(() => {
-          if (turnSeat.value === mySeat.value && (!lastCombo.value || lastCombo.value.seat === mySeat.value) && (hands[mySeat.value]?.length || 0) === 1) {
-            executeBaoDanPlay(mySeat.value);
-          }
-        }, 700);
+      } else if (triggerSingleCardAutoTurn()) {
+        // 已交由报单自动托管出清/过牌
       } else if (isAutoHost.value) {
         checkAutoHostTurn();
       } else {
@@ -3269,7 +3380,7 @@ function handleRemoteGameEvent(evt: any) {
     }
   }
 
-  if (evt.seat === mySeat.value) return;
+  if (evt.seat === mySeat.value && !evt.autoPlay && !evt.autoPass) return;
   const s = evt.seat;
   const action = evt.action || (evt.autoPlay ? 'play' : evt.autoPass ? 'pass' : '');
   if (action === 'play') {
@@ -3608,6 +3719,10 @@ function getEnhancedAIPlay(seat: number): Card[] | null {
       return [...currentHand];
     }
   }
+  if (currentHand.length === 1) {
+    aiThoughts[seat] = '报单无法压制当前牌型，自动过牌';
+    return null;
+  }
 
   // 2. 转换目标牌型为 YansanCombo 供引擎决策
   const targetCombo = lastCombo.value && lastCombo.value.seat !== seat ? lastCombo.value : null;
@@ -3759,13 +3874,22 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
   }
   const sortedRanks = Array.from(rankGroups.keys()).sort((a, b) => getRankWeight(a) - getRankWeight(b));
 
+  const seenComboKeys = new Set<string>();
+  const pushUnique = (list: Card[][], combo: Card[]) => {
+    const key = combo.map((c) => c.id).sort().join('|');
+    if (!seenComboKeys.has(key)) {
+      seenComboKeys.add(key);
+      list.push(combo);
+    }
+  };
+
   if (!target) {
     const results: Card[][] = [];
 
     // 1. 单张
     for (const c of cards) {
       const ev = evaluateCombo([c], seat);
-      if (ev) results.push([c]);
+      if (ev) pushUnique(results, [c]);
     }
     // 2. 对子与三条
     for (const rk of sortedRanks) {
@@ -3775,32 +3899,20 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
           for (let j = i + 1; j < group.length; j++) {
             const pair = [group[i], group[j]];
             const ev = evaluateCombo(pair, seat);
-            if (ev) results.push(pair);
+            if (ev) pushUnique(results, pair);
           }
         }
       }
       if (group.length >= 3) {
         const trip = group.slice(0, 3);
         const ev = evaluateCombo(trip, seat);
-        if (ev) results.push(trip);
+        if (ev) pushUnique(results, trip);
       }
     }
     // 3. 五张牌型 (顺子、同花、俘虏、四带一、同花顺)
     if (cards.length >= 5) {
-      // 俘虏
-      const triples = sortedRanks.filter((rk) => rankGroups.get(rk)!.length >= 3);
-      const pairs = sortedRanks.filter((rk) => rankGroups.get(rk)!.length >= 2);
-      for (const tRk of triples) {
-        for (const pRk of pairs) {
-          if (tRk !== pRk) {
-            const fh = [...rankGroups.get(tRk)!.slice(0, 3), ...rankGroups.get(pRk)!.slice(0, 2)];
-            const ev = evaluateCombo(fh, seat);
-            if (ev) results.push(fh);
-          }
-        }
-      }
-      // 顺子
-      const uniqueRanks = Array.from(new Set(cards.map((c) => c.rank)));
+      // 顺子（按牌面升序包含 A-2-3-4-5 与常规顺子）
+      const uniqueRanks = Array.from(new Set(cards.map((c) => c.rank))).sort((a, b) => a - b);
       for (let i = 0; i <= uniqueRanks.length - 5; i++) {
         const sub = uniqueRanks.slice(i, i + 5);
         let isSeq = true;
@@ -3816,11 +3928,18 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
           const combo = sub.map((r) => cards.find((c) => c.rank === r)).filter(Boolean) as Card[];
           if (combo.length === 5) {
             const ev = evaluateCombo(combo, seat);
-            if (ev) results.push(combo);
+            if (ev) pushUnique(results, combo);
           }
         }
       }
-      // 同花
+      if (uniqueRanks.includes(3) && uniqueRanks.includes(4) && uniqueRanks.includes(5) && uniqueRanks.includes(14) && uniqueRanks.includes(15)) {
+        const combo = [3, 4, 5, 14, 15].map((r) => cards.find((c) => c.rank === r)).filter(Boolean) as Card[];
+        if (combo.length === 5) {
+          const ev = evaluateCombo(combo, seat);
+          if (ev) pushUnique(results, combo);
+        }
+      }
+      // 同花与同花顺
       const suitGroups = new Map<string, Card[]>();
       for (const c of cards) {
         if (!suitGroups.has(c.suit)) suitGroups.set(c.suit, []);
@@ -3828,9 +3947,40 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
       }
       for (const group of suitGroups.values()) {
         if (group.length >= 5) {
-          const sub = group.slice(0, 5);
-          const ev = evaluateCombo(sub, seat);
-          if (ev) results.push(sub);
+          const sSorted = [...group].sort((a, b) => getCardPower(a) - getCardPower(b));
+          for (let i = 0; i <= sSorted.length - 5; i++) {
+            const sub = sSorted.slice(i, i + 5);
+            const ev = evaluateCombo(sub, seat);
+            if (ev) pushUnique(results, sub);
+          }
+          const sfA2345 = [3, 4, 5, 14, 15].map((r) => group.find((c) => c.rank === r)).filter(Boolean) as Card[];
+          if (sfA2345.length === 5) {
+            const ev = evaluateCombo(sfA2345, seat);
+            if (ev) pushUnique(results, sfA2345);
+          }
+        }
+      }
+      // 俘虏
+      const triples = sortedRanks.filter((rk) => rankGroups.get(rk)!.length >= 3);
+      const pairs = sortedRanks.filter((rk) => rankGroups.get(rk)!.length >= 2);
+      for (const tRk of triples) {
+        for (const pRk of pairs) {
+          if (tRk !== pRk) {
+            const fh = [...rankGroups.get(tRk)!.slice(0, 3), ...rankGroups.get(pRk)!.slice(0, 2)];
+            const ev = evaluateCombo(fh, seat);
+            if (ev) pushUnique(results, fh);
+          }
+        }
+      }
+      // 四带一
+      const fourRanks = sortedRanks.filter((rk) => rankGroups.get(rk)!.length === 4);
+      for (const fRk of fourRanks) {
+        for (const c of cards) {
+          if (c.rank !== fRk) {
+            const fo = [...rankGroups.get(fRk)!, c];
+            const ev = evaluateCombo(fo, seat);
+            if (ev) pushUnique(results, fo);
+          }
         }
       }
     }
@@ -3856,7 +4006,7 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
     for (const c of cards) {
       const ev = evaluateCombo([c], seat);
       if (ev && canBeat(ev, target)) {
-        results.push([c]);
+        pushUnique(results, [c]);
       }
     }
   } else if (target.type === 'pair') {
@@ -3868,7 +4018,7 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
             const pair = [group[i], group[j]];
             const ev = evaluateCombo(pair, seat);
             if (ev && canBeat(ev, target)) {
-              results.push(pair);
+              pushUnique(results, pair);
             }
           }
         }
@@ -3881,7 +4031,7 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
         const trip = group.slice(0, 3);
         const ev = evaluateCombo(trip, seat);
         if (ev && canBeat(ev, target)) {
-          results.push(trip);
+          pushUnique(results, trip);
         }
       }
       if (group.length === 4) {
@@ -3889,14 +4039,14 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
           const trip = group.filter((_, idx) => idx !== i);
           const ev = evaluateCombo(trip, seat);
           if (ev && canBeat(ev, target)) {
-            results.push(trip);
+            pushUnique(results, trip);
           }
         }
       }
     }
   } else if (target.type === '5_card') {
     // 顺子
-    const uniqueRanks = Array.from(new Set(cards.map((c) => c.rank)));
+    const uniqueRanks = Array.from(new Set(cards.map((c) => c.rank))).sort((a, b) => a - b);
     for (let i = 0; i <= uniqueRanks.length - 5; i++) {
       const sub = uniqueRanks.slice(i, i + 5);
       let isSeq = true;
@@ -3913,7 +4063,7 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
         if (combo.length === 5) {
           const ev = evaluateCombo(combo, seat);
           if (ev && canBeat(ev, target)) {
-            results.push(combo);
+            pushUnique(results, combo);
           }
         }
       }
@@ -3923,12 +4073,12 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
       if (combo.length === 5) {
         const ev = evaluateCombo(combo, seat);
         if (ev && canBeat(ev, target)) {
-          results.push(combo);
+          pushUnique(results, combo);
         }
       }
     }
 
-    // 同花
+    // 同花与同花顺
     const suitGroups = new Map<string, Card[]>();
     for (const c of cards) {
       if (!suitGroups.has(c.suit)) suitGroups.set(c.suit, []);
@@ -3941,7 +4091,14 @@ function findAllWinningCombos(cardList: Card[], rawTarget: any, seat: number): C
           const sub = sSorted.slice(i, i + 5);
           const ev = evaluateCombo(sub, seat);
           if (ev && canBeat(ev, target)) {
-            results.push(sub);
+            pushUnique(results, sub);
+          }
+        }
+        const sfA2345 = [3, 4, 5, 14, 15].map((r) => group.find((c) => c.rank === r)).filter(Boolean) as Card[];
+        if (sfA2345.length === 5) {
+          const ev = evaluateCombo(sfA2345, seat);
+          if (ev && canBeat(ev, target)) {
+            pushUnique(results, sfA2345);
           }
         }
       }
@@ -4078,9 +4235,9 @@ function runBotTurns(startSeat: number) {
   drawTable();
   emitStatus();
 
-  // 报单快速响应：若对手出的是对子/三条/五张，而机器人张数不足(如报单仅剩1张牌)，无法跟牌，留出适度反应时间迅速过牌
+  // 报单快速响应：若剩余 1 张牌或对手牌型张数多于剩余手牌，快速自动出清或过牌
   const isCountShort = lastCombo.value && lastCombo.value.cards.length > hands[s].length;
-  const thinkingDelay = isCountShort ? 900 : Math.floor(1400 + Math.random() * 700);
+  const thinkingDelay = (isCountShort || hands[s].length === 1) ? 850 : Math.floor(1400 + Math.random() * 700);
 
   if (botTimer) clearTimeout(botTimer);
   botTimer = setTimeout(() => {
@@ -4178,7 +4335,7 @@ function botStep(seat: number) {
       const names = ['本家', '西席', '北席', '东席'];
       for (const s of activeSeats) {
         if (s === leadSeat) {
-          seatStatus[s] = s === 0 ? '该您出牌 (接风领出)' : (leaderFinished ? '接风领牌' : '大过全场 · 领出新牌');
+          seatStatus[s] = s === mySeat.value ? '该您出牌 (接风领出)' : (leaderFinished ? '接风领牌' : '大过全场 · 领出新牌');
         } else {
           seatStatus[s] = '要不起 (过牌)';
         }
@@ -4187,7 +4344,8 @@ function botStep(seat: number) {
       emitStatus();
 
       // 留存 1.5 秒桌面牌型，让玩家看清全场过牌与谁获得领出权，随后清空桌面
-      setTimeout(() => {
+      if (passClearTimer) clearTimeout(passClearTimer);
+      passClearTimer = setTimeout(() => {
         if (winnerSeat.value !== null) return;
         lastCombo.value = null;
         for (const s of activeSeats) {
@@ -4204,15 +4362,8 @@ function botStep(seat: number) {
           } else if (isSeatBot(leadSeat)) {
             runBotTurns(leadSeat);
           }
-        } else if ((hands[mySeat.value]?.length || 0) === 1) {
-          seatStatus[mySeat.value] = '🚨 报单绝杀 · 自动打出最后一张牌...';
-          drawTable();
-          emitStatus();
-          playerAutoTimer = setTimeout(() => {
-            if (turnSeat.value === mySeat.value && (!lastCombo.value || lastCombo.value.seat === mySeat.value) && (hands[mySeat.value]?.length || 0) === 1) {
-              executeBaoDanPlay(mySeat.value);
-            }
-          }, 700);
+        } else if (triggerSingleCardAutoTurn()) {
+          // 已交由报单自动托管出清/过牌
         } else if (isAutoHost.value) {
           checkAutoHostTurn();
         } else {
@@ -4266,7 +4417,8 @@ function onWsMessage(ev: MessageEvent) {
       lastProcessedMoveKey = '';
       if (msg.deal) {
         const dealIdentifier = msg.deal.dealId || msg.deal.createdAt || '';
-        if (dealIdentifier && dealIdentifier === lastAppliedDealId.value && hands[0] && hands[0].length > 0) {
+        const curHand = hands[mySeat.value];
+        if (dealIdentifier && dealIdentifier === lastAppliedDealId.value && curHand && curHand.length > 0) {
           console.log('🛡️ [烟三防重置] 正在对局中且发牌一致，保持当前牌桌');
           return;
         }
@@ -4313,6 +4465,18 @@ function onWsMessage(ev: MessageEvent) {
   } catch {}
 }
 
+watch(() => props.ws, (newWs, oldWs) => {
+  if (oldWs) {
+    try { oldWs.removeEventListener('message', onWsMessage); } catch {}
+  }
+  if (newWs) {
+    try {
+      newWs.removeEventListener('message', onWsMessage);
+      newWs.addEventListener('message', onWsMessage);
+    } catch {}
+  }
+});
+
 onMounted(() => {
   preloadCardAssets();
   cleanupCardLoader = onCardAssetsLoaded(() => {
@@ -4350,6 +4514,11 @@ onBeforeUnmount(() => {
   stopTurnCountdown();
   if (playerAutoTimer) clearTimeout(playerAutoTimer);
   if (autoHostTimer) clearTimeout(autoHostTimer);
+  if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
+  if (remoteWatchdogTimer) clearTimeout(remoteWatchdogTimer);
+  if (dealingCeremonyTimer) clearTimeout(dealingCeremonyTimer);
+  if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
+  if (passClearTimer) clearTimeout(passClearTimer);
   if (botTimer) clearTimeout(botTimer);
   if (danmakuTimer) clearTimeout(danmakuTimer);
   if (unbeatableTimer) clearTimeout(unbeatableTimer);

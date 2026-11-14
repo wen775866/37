@@ -380,7 +380,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import SeatCard from './waiting/SeatCard.vue';
 import { UserProfile } from '../utils/storage';
 import { TableTheme } from '../utils/theme';
@@ -497,6 +497,7 @@ function onLeave() {
     try {
       props.ws.send(JSON.stringify({
         type: 'scene_leave',
+        roomId: currentRoomId.value,
         gameType: props.gameType,
         sceneMode: props.sceneMode,
         playerId: props.currentUser.id,
@@ -1082,6 +1083,18 @@ function handleWsMessage(event: MessageEvent) {
     }
   } catch {}
 }
+
+watch(() => props.ws, (newWs, oldWs) => {
+  if (oldWs) {
+    try { oldWs.removeEventListener('message', handleWsMessage); } catch {}
+  }
+  if (newWs) {
+    try {
+      newWs.removeEventListener('message', handleWsMessage);
+      newWs.addEventListener('message', handleWsMessage);
+    } catch {}
+  }
+});
 
 onMounted(() => {
   joinSceneQueue();

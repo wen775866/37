@@ -2107,15 +2107,15 @@ function handleOpenPoster(payload?: Partial<VictoryPosterData>) {
     if (lastRecord) {
       victoryPosterData.value = {
         gameType: lastRecord.gameType === 'yansan' ? '经典烟三' : lastRecord.gameType === 'mahjong' ? '经典麻将' : '十三水',
-        gameTypeBadge: lastRecord.gameType,
+        gameTypeBadge: lastRecord.gameName || lastRecord.gameType,
         playerName: userProfile.name || '雀坛国手',
         playerAvatar: userProfile.avatar || '👑',
-        outcome: lastRecord.result === 'win' ? 'win' : lastRecord.result === 'loss' ? 'lose' : 'draw',
-        scoreDelta: lastRecord.scoreDelta,
-        scoreUnit: lastRecord.gameType === '十三水' ? '水' : '分',
-        tableSummary: `${lastRecord.date} · 房间 ${lastRecord.roomId}`,
+        outcome: lastRecord.result === 'win' ? 'win' : lastRecord.result === 'lose' ? 'lose' : 'draw',
+        scoreDelta: lastRecord.coinsDelta ?? 0,
+        scoreUnit: lastRecord.gameType === 'shisanshui' ? '水' : '分',
+        tableSummary: `${lastRecord.timestamp || ''} · ${lastRecord.gameName || '经典对局'}`,
         highlights: [lastRecord.details || '技高一筹，所向披靡'],
-        customSealText: lastRecord.scoreDelta > 0 ? '雀圣绝顶' : undefined,
+        customSealText: (lastRecord.coinsDelta ?? 0) > 0 ? '雀圣绝顶' : undefined,
       };
     }
   }
@@ -3488,10 +3488,11 @@ function onGameMove(payload: any) {
   const currentRoomIdVal = activeRoomId.value || activeRoom.value?.id;
 
   // 1. 严格过滤非本家出牌广播与内部防回环：避免其他客户端或内部动画回调将远端事件反向广播回 WebSocket 导致死循环
-  const myUserSeat = currentWaitingRoomPlayers.value.findIndex(
+  const myUserIdx = currentWaitingRoomPlayers.value.findIndex(
     (p) => (userProfile.id && p.id === userProfile.id) || (userProfile.name && p.name === userProfile.name)
   );
-  const selfSeat = myUserSeat >= 0 ? myUserSeat : 0;
+  const matchedPlayer = myUserIdx >= 0 ? currentWaitingRoomPlayers.value[myUserIdx] : null;
+  const selfSeat = typeof matchedPlayer?.seat === 'number' ? matchedPlayer.seat : (myUserIdx >= 0 ? myUserIdx : 0);
 
   // 若该动作为远端动作、已跳过标记、或席位与当前客户端自身席位不一致，坚决不向服务器回传
   const isSelfMove = typeof payload?.seat !== 'number' || payload.seat === selfSeat;
@@ -3738,6 +3739,15 @@ function onVisibilityChange() {
   }
 }
 
+function onBrowserOnline() {
+  isOnline.value = true;
+  connectWs();
+}
+
+function onBrowserOffline() {
+  isOnline.value = false;
+}
+
 onMounted(() => {
   // 校验是否存在对局锁定 (防止刷页面脱离牌局)
   const existingLock = getActiveGameLock();
@@ -3787,8 +3797,8 @@ onMounted(() => {
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
   if (typeof window !== 'undefined') {
-    window.addEventListener('online', () => { isOnline.value = true; connectWs(); });
-    window.addEventListener('offline', () => { isOnline.value = false; });
+    window.addEventListener('online', onBrowserOnline);
+    window.addEventListener('offline', onBrowserOffline);
   }
 
   // Immediate check & balance refresh on initial mount
@@ -3804,8 +3814,8 @@ onBeforeUnmount(() => {
     document.removeEventListener('visibilitychange', onVisibilityChange);
   }
   if (typeof window !== 'undefined') {
-    window.removeEventListener('online', () => {});
-    window.removeEventListener('offline', () => {});
+    window.removeEventListener('online', onBrowserOnline);
+    window.removeEventListener('offline', onBrowserOffline);
   }
   ws?.close();
 });

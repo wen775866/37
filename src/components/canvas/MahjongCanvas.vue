@@ -12,7 +12,6 @@
       <canvas
         ref="canvasRef"
         @click="onCanvasClick"
-        @pointerdown="onCanvasClick"
         class="w-full h-full absolute inset-0 block cursor-pointer"
       ></canvas>
 
@@ -696,9 +695,14 @@ watch(() => props.initialDeal, (deal) => {
   dealNewMatch(undefined, false, deal);
 }, { immediate: true });
 
-// 玩家列表变化时（如掉线/托管更新），仅同步托管状态并重绘牌桌头像角标，绝不重置牌局！
+// 玩家列表变化时（如掉线/托管更新），仅同步托管状态并仅在状态变化时重绘牌桌头像角标，绝不重置牌局！
+let lastRoomPlayersSig = '';
 watch(() => props.roomPlayers, (newPlayers) => {
+  let sig = '';
   if (Array.isArray(newPlayers)) {
+    sig = newPlayers
+      .map((p: any, i: number) => `${typeof p?.seat === 'number' ? p.seat : i}:${p?.name || ''}:${p?.isAutoManaged ? 1 : 0}:${p?.isDisconnected ? 1 : 0}`)
+      .join('|');
     newPlayers.forEach((p: any) => {
       if (typeof p?.seat === 'number') {
         if (p.isAutoManaged) autoManagedSeats.value[p.seat] = true;
@@ -708,7 +712,10 @@ watch(() => props.roomPlayers, (newPlayers) => {
       }
     });
   }
-  drawTable();
+  if (sig !== lastRoomPlayersSig) {
+    lastRoomPlayersSig = sig;
+    drawTable();
+  }
 }, { deep: true });
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -885,7 +892,8 @@ function startTurnCountdown() {
         checkAutoHostTurn();
       } else {
         const absSeat = relToAbsSeat(turnPlayer.value);
-        if (isSeatBot(absSeat)) {
+        const isOnlineServerRoom = !props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN;
+        if (!isOnlineServerRoom && isSeatBot(absSeat)) {
           botPlay(turnPlayer.value, () => passTurnToNext(turnPlayer.value));
         }
       }
@@ -949,6 +957,7 @@ function resetAutoHostState() {
 const isClaiming = ref(false);
 const claimCountdown = ref(10);
 let claimInterval: any = null;
+let claimWaitTimer: any = null;
 let pendingClaimNext: (() => void) | null = null;
 
 function stopClaimCountdown() {
@@ -958,6 +967,10 @@ function stopClaimCountdown() {
     clearInterval(claimInterval);
     claimInterval = null;
   }
+  if (claimWaitTimer) {
+    clearTimeout(claimWaitTimer);
+    claimWaitTimer = null;
+  }
 }
 
 function cleanAllGameTimers() {
@@ -966,6 +979,8 @@ function cleanAllGameTimers() {
   resetAutoHostState();
   cleanDealingTimers();
   pendingPengTurn.value = null;
+  lastOptimisticDrawId = null;
+  lastDrawnTileIdByRelSeat.fill(null);
   if (botTimer) {
     clearTimeout(botTimer);
     botTimer = null;
@@ -1063,29 +1078,29 @@ function waitForPlayerClaim(next: () => void) {
   // 托管状态下的智能截击判定（托管自动明杠或智能碰牌）
   if (isAutoHost.value && !hasWon.value && !isDrawStalemate.value && dealingPhase.value === 'playing') {
     if (canGang.value) {
-      const t = setTimeout(() => {
+      claimWaitTimer = setTimeout(() => {
+        claimWaitTimer = null;
         if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
         handleGang();
       }, 500);
-      botActionTimers.push(t);
       return;
     }
     if (canPeng.value) {
       const d = lastDiscarded.value;
       if (d && shouldSmartPeng(myHand.value, d)) {
-        const t = setTimeout(() => {
+        claimWaitTimer = setTimeout(() => {
+          claimWaitTimer = null;
           if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
           handlePeng();
         }, 500);
-        botActionTimers.push(t);
         return;
       }
     }
-    const t = setTimeout(() => {
-      if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
+    claimWaitTimer = setTimeout(() => {
+      claimWaitTimer = null;
+      if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing' || !lastDiscarded.value || pendingPengTurn.value !== null) return;
       next();
     }, 550);
-    botActionTimers.push(t);
     return;
   }
 
@@ -1114,11 +1129,11 @@ function waitForPlayerClaim(next: () => void) {
     const discRel = lastDiscarded.value?.discardBy ?? 0;
     const isNextSelf = ((discRel + 1) % 4) === 0;
     const waitDelay = (!props.isPracticeMode && props.ws && isNextSelf) ? 1200 : 550;
-    const t = setTimeout(() => {
-      if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
+    claimWaitTimer = setTimeout(() => {
+      claimWaitTimer = null;
+      if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing' || !lastDiscarded.value || pendingPengTurn.value !== null) return;
       next();
     }, waitDelay);
-    botActionTimers.push(t);
   }
 }
 
@@ -1576,10 +1591,10 @@ function handleLeaveToLobby() {
 function onRestartGame() {
   soundFX.playTap();
   cleanAllGameTimers();
-  hasWon.value = false;
   showSettlement.value = false;
-  isDrawStalemate.value = false;
   if (props.isPracticeMode || isAllOtherPlayersBots.value) {
+    hasWon.value = false;
+    isDrawStalemate.value = false;
     hasClickedReady.value = false;
     continueGame();
     emit('restart');
@@ -1587,20 +1602,16 @@ function onRestartGame() {
   }
 
   hasClickedReady.value = true;
-  showSettlement.value = false;
   if (props.ws && props.ws.readyState === WebSocket.OPEN) {
     try {
       props.ws.send(JSON.stringify({
         type: 'scene_player_ready',
         roomId: props.roomId,
         playerId: props.currentUser?.id,
-        isReady: true,
-      }));
-      props.ws.send(JSON.stringify({
-        type: 'room_restart',
-        roomId: props.roomId,
+        playerName: props.currentUser?.name,
         gameType: 'mahjong',
         sceneMode: props.sceneMode,
+        isReady: true,
       }));
     } catch {}
   }
@@ -1614,8 +1625,15 @@ function continueGame() {
 }
 
 const lastAppliedDealId = ref<string>('');
+let lastOptimisticDrawId: string | null = null;
+const lastDrawnTileIdByRelSeat: (string | null)[] = [null, null, null, null];
+let snapshotTimer: any = null;
 
 function clearLocalSnapshot() {
+  if (snapshotTimer) {
+    clearTimeout(snapshotTimer);
+    snapshotTimer = null;
+  }
   const roomId = props.roomId;
   if (!roomId) return;
   try {
@@ -1624,7 +1642,7 @@ function clearLocalSnapshot() {
   } catch {}
 }
 
-function saveLocalSnapshot() {
+function saveLocalSnapshotNow() {
   if (props.isPracticeMode) return;
   const roomId = props.roomId;
   if (!roomId) return;
@@ -1659,6 +1677,15 @@ function saveLocalSnapshot() {
     localStorage.setItem(`mahjong_table_snapshot_${roomId}`, serialized);
     localStorage.setItem('mahjong_table_snapshot_latest', serialized);
   } catch {}
+}
+
+function saveLocalSnapshot() {
+  if (props.isPracticeMode) return;
+  if (snapshotTimer) clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(() => {
+    snapshotTimer = null;
+    saveLocalSnapshotNow();
+  }, 300);
 }
 
 function tryRestoreLocalSnapshot(): boolean {
@@ -1724,6 +1751,8 @@ function handleReconnectSync(msg: any) {
   isRollingDice.value = false;
   dealingPhase.value = 'playing';
   handFlipProgress.value = 1;
+  lastOptimisticDrawId = null;
+  lastDrawnTileIdByRelSeat.fill(null);
 
   const bs = msg.boardState;
   const deal = msg.deal;
@@ -1731,14 +1760,14 @@ function handleReconnectSync(msg: any) {
   if (deal) {
     const dealId = deal.dealId || deal.createdAt || '';
     if (dealId) lastAppliedDealId.value = dealId;
-    if (deal.dice && !dealerDice.value) {
+    if (deal.dice) {
       dealerDice.value = deal.dice;
       currentDiceDisplay.value = { d1: deal.dice.d1, d2: deal.dice.d2 };
     }
     if (deal.dealerSeat !== undefined) {
       dealerSeat.value = (deal.dealerSeat - mySeat.value + 4) % 4;
     }
-    if (wallPool.length === 0 && Array.isArray(deal.remainingWall)) {
+    if (Array.isArray(deal.remainingWall)) {
       wallPool = [...deal.remainingWall];
       wallCount.value = wallPool.length;
     }
@@ -1746,39 +1775,59 @@ function handleReconnectSync(msg: any) {
 
   // Restore river discards from server authoritative board state
   if (bs?.extraState?.mahjongDiscards && Array.isArray(bs.extraState.mahjongDiscards)) {
-    const sDiscards = bs.extraState.mahjongDiscards.map((d: any) => {
+    discards.value = bs.extraState.mahjongDiscards.map((d: any) => {
       const absS = typeof d.discardBy === 'number' ? d.discardBy : (typeof d.absSeat === 'number' ? d.absSeat : 0);
       return {
         ...d,
         discardBy: absToRelSeat(absS),
       };
     });
-    if (sDiscards.length >= discards.value.length) {
-      discards.value = sDiscards;
-    }
     if (bs.extraState.lastDiscarded) {
       const lAbs = typeof bs.extraState.lastDiscarded.discardBy === 'number' ? bs.extraState.lastDiscarded.discardBy : 0;
       lastDiscarded.value = {
         ...bs.extraState.lastDiscarded,
         discardBy: absToRelSeat(lAbs),
       };
+    } else {
+      lastDiscarded.value = null;
     }
   }
 
-  // Restore melds from server
+  // Restore melds from server (normalize server meld objects to MahjongTile[][])
   if (bs?.extraState?.mahjongMelds && Array.isArray(bs.extraState.mahjongMelds)) {
+    const normalizeServerMelds = (rawMelds: any[]): MahjongTile[][] => {
+      if (!Array.isArray(rawMelds)) return [];
+      return rawMelds
+        .map((m: any) => {
+          if (Array.isArray(m)) return m;
+          if (m && m.tile) {
+            const cnt = m.type === 'gang' ? 4 : 3;
+            return Array.from({ length: cnt }, (_, i) => ({ ...m.tile, id: `${m.tile.id}-m-${i}` }));
+          }
+          return [];
+        })
+        .filter((arr: MahjongTile[]) => arr.length > 0);
+    };
     const sMe = mySeat.value;
-    const myServerMelds = bs.extraState.mahjongMelds[sMe] || [];
-    if (myServerMelds.length > 0 && meldedTiles.value.length === 0) {
-      meldedTiles.value = myServerMelds;
-    }
+    meldedTiles.value = normalizeServerMelds(bs.extraState.mahjongMelds[sMe] || []);
     for (let r = 1; r < 4; r++) {
       const absR = relToAbsSeat(r);
-      const oppM = bs.extraState.mahjongMelds[absR] || [];
-      if (oppM.length > 0 && oppMelds.value[r - 1].length === 0) {
-        oppMelds.value[r - 1] = oppM;
-      }
+      oppMelds.value[r - 1] = normalizeServerMelds(bs.extraState.mahjongMelds[absR] || []);
     }
+  }
+
+  if (Array.isArray(bs?.seatKongScores) && bs.seatKongScores.length === 4) {
+    const mappedKong = [0, 0, 0, 0];
+    for (let relS = 0; relS < 4; relS++) {
+      mappedKong[relS] = bs.seatKongScores[relToAbsSeat(relS)] || 0;
+    }
+    seatKongScores.value = mappedKong;
+  }
+
+  if (bs?.extraState?.pendingPengSeat !== undefined) {
+    pendingPengTurn.value = bs.extraState.pendingPengSeat !== null
+      ? absToRelSeat(bs.extraState.pendingPengSeat)
+      : null;
   }
 
   if (bs?.turnSeat !== undefined) {
@@ -1789,8 +1838,29 @@ function handleReconnectSync(msg: any) {
     wallCount.value = bs.extraState.wallRemaining;
   }
 
-  if (myHand.value.length === 0 && deal?.seatCards) {
+  if (deal?.seatCards) {
     myHand.value = sortHand([...(deal.seatCards[mySeat.value] || [])]);
+    oppHands.value = [
+      sortHand([...(deal.seatCards[relToAbsSeat(1)] || [])]),
+      sortHand([...(deal.seatCards[relToAbsSeat(2)] || [])]),
+      sortHand([...(deal.seatCards[relToAbsSeat(3)] || [])]),
+    ];
+  } else if (Array.isArray(bs?.handsCount) && bs.handsCount.length === 4) {
+    for (let r = 1; r < 4; r++) {
+      const targetLen = Number(bs.handsCount[relToAbsSeat(r)] ?? 13);
+      while (oppHands.value[r - 1].length > targetLen) {
+        oppHands.value[r - 1].pop();
+      }
+      while (oppHands.value[r - 1].length < targetLen) {
+        oppHands.value[r - 1].push({
+          id: `opp-sync-${r}-${oppHands.value[r - 1].length}`,
+          type: 'wan',
+          value: 1,
+          text: '一万',
+          color: '#DC2626',
+        });
+      }
+    }
   }
 
   myHandDealtCount.value = myHand.value.length;
@@ -1806,6 +1876,8 @@ function handleReconnectSync(msg: any) {
 
 function dealNewMatch(designatedDealer?: number, forceReApply = false, dealOverride?: any) {
   hasClickedReady.value = false;
+  lastOptimisticDrawId = null;
+  lastDrawnTileIdByRelSeat.fill(null);
   resetAutoHostState();
   const currentDeal = dealOverride || props.initialDeal;
   if (currentDeal?.seatCards) {
@@ -1904,9 +1976,21 @@ function dealNewMatch(designatedDealer?: number, forceReApply = false, dealOverr
   oppMelds.value = [[], [], []];
   discards.value = [];
   lastDiscarded.value = null;
+  pendingPengTurn.value = null;
   selectedIndex.value = null;
   hasWon.value = false;
   announcingWinnerSeat.value = null;
+  winningBreakdown.value = {
+    fans: [],
+    totalFan: 1,
+    rewardCoins: 0,
+    maCount: baseMaCount.value,
+    rewardMaTiles: [],
+    hitMaCount: 0,
+    payoutPerOpponent: 10,
+    isFourHongzhong: false,
+    netCoinsPerSeat: [0, 0, 0, 0],
+  };
   if (announceTimer) {
     clearTimeout(announceTimer);
     announceTimer = null;
@@ -2058,7 +2142,8 @@ function finishDealingAndStartPlay() {
       : `👑 【${SEAT_NAMES[dealerSeat.value]}】是庄家，执 14 张牌率先出牌...`;
     drawTable();
     const dealerAbsSeat = relToAbsSeat(dealerSeat.value);
-    if (isSeatBot(dealerAbsSeat)) {
+    const isOnlineServerRoom = !props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN;
+    if (!isOnlineServerRoom && isSeatBot(dealerAbsSeat)) {
       const t = setTimeout(() => {
         botPlay(dealerSeat.value, () => passTurnToNext(dealerSeat.value));
       }, 950);
@@ -2120,7 +2205,8 @@ function skipDealingAnimation() {
       : `👑 【${SEAT_NAMES[dealerSeat.value]}】是庄家，执 14 张牌率先出牌...`;
     drawTable();
     const dealerAbsSeat = relToAbsSeat(dealerSeat.value);
-    if (isSeatBot(dealerAbsSeat)) {
+    const isOnlineServerRoom = !props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN;
+    if (!isOnlineServerRoom && isSeatBot(dealerAbsSeat)) {
       const t = setTimeout(() => {
         botPlay(dealerSeat.value, () => passTurnToNext(dealerSeat.value));
       }, 800);
@@ -2254,6 +2340,7 @@ const suitWildcardCache = new Map<string, number>();
 
 function minWildcardsForSuit(arr: number[]): number {
   if (arr.length === 0) return 0;
+  if (suitWildcardCache.size > 5000) suitWildcardCache.clear();
   const key = arr.join(',');
   if (suitWildcardCache.has(key)) return suitWildcardCache.get(key)!;
 
@@ -2491,6 +2578,19 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
   const isHzMode = isHongzhongMode.value;
   const fourHzWin = isHzMode && (isFourHongzhong || hzCountInHand === 4 || Boolean(payloadData?.isFourHz));
 
+  // Sync authoritative kong scores if server sent them
+  if (Array.isArray(payloadData?.seatKongScores) && payloadData.seatKongScores.length === 4) {
+    for (let relS = 0; relS < 4; relS++) {
+      seatKongScores.value[relS] = payloadData.seatKongScores[relToAbsSeat(relS)] || 0;
+    }
+  }
+
+  // Ensure isYiWuJiuMa uses current round's fourHzWin rather than any stale previous-round flag
+  winningBreakdown.value = {
+    ...winningBreakdown.value,
+    isFourHongzhong: fourHzWin,
+  };
+
   let maCount = baseCodes;
   let hitCount = 0;
   let payoutPerOpponent = 0;
@@ -2673,7 +2773,7 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
       : `${winnerName}自摸和牌 (奖${maCount}码中${hitCount}码)`,
   });
 
-  if (winnerSeat === 0) {
+  if (winnerSeat === 0 && !payloadData?.fromServerWs) {
     sendGameMove('hu', {
       winner: mySeat.value,
       isFourHz: fourHzWin,
@@ -2696,7 +2796,37 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
 }
 
 
+let drawRafId: number | null = null;
+
+function ensureOpponentHandSize(botIdx: number) {
+  if (dealingPhase.value !== 'playing' && dealingPhase.value !== 'sorting_tiles') return;
+  const oppHand = oppHands.value[botIdx] || [];
+  const meldCount = (oppMelds.value[botIdx] || []).length;
+  // Standard Mahjong rule: baseline hand size is 13 minus meldCount * 3
+  if (oppHand.length === 0) {
+    const defaultLen = Math.max(1, 13 - (meldCount * 3));
+    for (let i = 0; i < defaultLen; i++) {
+      oppHand.push({
+        id: `opp-ph-${botIdx}-${i}`,
+        type: 'wan',
+        value: 1,
+        text: '一万',
+        color: '#DC2626',
+      });
+    }
+    oppHands.value[botIdx] = oppHand;
+  }
+}
+
 function drawTable() {
+  if (drawRafId !== null) return;
+  drawRafId = requestAnimationFrame(() => {
+    drawRafId = null;
+    renderTableFrame();
+  });
+}
+
+function renderTableFrame() {
   const canvas = canvasRef.value;
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
@@ -2705,9 +2835,14 @@ function drawTable() {
   const dpr = window.devicePixelRatio || 1;
   const width = 680;
   const height = 430;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
+  const targetW = Math.round(width * dpr);
+  const targetH = Math.round(height * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
 
   // Background Mahjong Table Felt with spotlight illumination
   const highlight = props.tableTheme?.highlightColor || '#FFFFFF';
@@ -2953,7 +3088,7 @@ function getPlayerInfoByRelSeat(relSeat: number): { name: string; avatar: string
   const defaultEmojis = ['👑', '🧑', '🧓', '🧔'];
   if (props.roomPlayers && props.roomPlayers.length > 0) {
     const absSeat = relToAbsSeat(relSeat);
-    const p = props.roomPlayers[absSeat];
+    const p = props.roomPlayers.find((x: any) => x?.seat === absSeat) || props.roomPlayers[absSeat];
     if (p && p.name) {
       const pName = String(p.name);
       const shortName = pName.length > 4 ? `${pName.slice(0, 3)}..` : pName;
@@ -2968,26 +3103,6 @@ function getPlayerInfoByRelSeat(relSeat: number): { name: string; avatar: string
     avatar: defaultEmojis[relSeat],
   };
 }
-
-  function ensureOpponentHandSize(botIdx: number) {
-    if (dealingPhase.value !== 'playing' && dealingPhase.value !== 'sorting_tiles') return;
-    const oppHand = oppHands.value[botIdx] || [];
-    const meldCount = (oppMelds.value[botIdx] || []).length;
-    // Standard Mahjong rule: baseline hand size is 13 minus meldCount * 3
-    if (oppHand.length === 0) {
-      const defaultLen = Math.max(1, 13 - (meldCount * 3));
-      for (let i = 0; i < defaultLen; i++) {
-        oppHand.push({
-          id: `opp-ph-${botIdx}-${i}`,
-          type: 'wan',
-          value: 1,
-          text: '一万',
-          color: '#DC2626',
-        });
-      }
-      oppHands.value[botIdx] = oppHand;
-    }
-  }
 
   function getOpponentTotalTileCount(relSeat: number): number {
     if (dealingPhase.value === 'dealing_tiles') {
@@ -3484,6 +3599,8 @@ function handleDraw() {
   const newTile = wallPool.shift()!;
   wallCount.value = wallPool.length;
   myHand.value.push(newTile);
+  lastOptimisticDrawId = newTile.id;
+  lastDrawnTileIdByRelSeat[0] = newTile.id;
   turnPlayer.value = 0;
   sendGameMove('draw', { absSeat: mySeat.value, tile: newTile, wallRemaining: wallPool.length });
   saveLocalSnapshot();
@@ -3536,7 +3653,11 @@ function handlePeng() {
 
   // 🛡️ 如果因为网络延迟或抢跑导致手牌已为 3k+2（如摸了牌变成14张），碰牌优先，先将抢跑摸牌回滚至牌墙！
   if (myHand.value.length % 3 === 2) {
-    const premature = myHand.value.pop();
+    const drawId = lastOptimisticDrawId || lastDrawnTileIdByRelSeat[0];
+    const drawIdx = drawId ? myHand.value.findIndex((c) => c.id === drawId) : -1;
+    const premature = drawIdx >= 0 ? myHand.value.splice(drawIdx, 1)[0] : myHand.value.pop();
+    lastOptimisticDrawId = null;
+    lastDrawnTileIdByRelSeat[0] = null;
     if (premature) {
       wallPool.unshift(premature);
       wallCount.value = wallPool.length;
@@ -3585,29 +3706,37 @@ function handleGang() {
   soundFX.speakAction('gang');
 
   let kongedOpponentSeat: number | null = null;
-  let isAnOrBuGang = false;
+  let resolvedGangType: 'ming' | 'an' | 'bu' | null = null;
   let gangTile: MahjongTile | null = null;
 
   // Case 1: 明杠 (他人弃牌)
   if (lastDiscarded.value && lastDiscarded.value.discardBy !== 0) {
-    // 🛡️ 如果抢跑摸了牌，先回滚入牌墙
-    if (myHand.value.length % 3 === 2) {
-      const premature = myHand.value.pop();
-      if (premature) {
-        wallPool.unshift(premature);
-        wallCount.value = wallPool.length;
-      }
-    }
     const d = lastDiscarded.value;
     const matches = myHand.value.filter((c) => c.type === d.type && c.value === d.value);
     if (matches.length >= 3) {
+      // 🛡️ 如果抢跑摸了牌，先回滚入牌墙
+      if (myHand.value.length % 3 === 2) {
+        const drawId = lastOptimisticDrawId || lastDrawnTileIdByRelSeat[0];
+        const drawIdx = drawId ? myHand.value.findIndex((c) => c.id === drawId) : -1;
+        const premature = drawIdx >= 0 ? myHand.value.splice(drawIdx, 1)[0] : myHand.value.pop();
+        lastOptimisticDrawId = null;
+        lastDrawnTileIdByRelSeat[0] = null;
+        if (premature) {
+          wallPool.unshift(premature);
+          wallCount.value = wallPool.length;
+        }
+      }
       gangTile = d;
+      resolvedGangType = 'ming';
       const takeThree = matches.slice(0, 3);
       const idsToRemove = new Set(takeThree.map((c) => c.id));
       myHand.value = myHand.value.filter((c) => !idsToRemove.has(c.id));
       meldedTiles.value.push([...takeThree, d]);
       if (discards.value.length > 0 && discards.value[discards.value.length - 1].id === d.id) {
         discards.value.pop();
+      } else {
+        const dIdx = discards.value.findIndex((c) => c.id === d.id);
+        if (dIdx >= 0) discards.value.splice(dIdx, 1);
       }
       kongedOpponentSeat = d.discardBy !== undefined ? d.discardBy : turnPlayer.value;
       lastDiscarded.value = null;
@@ -3627,11 +3756,11 @@ function handleGang() {
     for (const tiles of counts.values()) {
       if (tiles.length === 4) {
         gangTile = tiles[0];
+        resolvedGangType = 'an';
         const ids = new Set(tiles.map((c) => c.id));
         myHand.value = myHand.value.filter((c) => !ids.has(c.id));
         meldedTiles.value.push(tiles);
         foundAnGang = true;
-        isAnOrBuGang = true;
         break;
       }
     }
@@ -3644,8 +3773,8 @@ function handleGang() {
           if (matchIdx !== -1) {
             const addedTile = myHand.value.splice(matchIdx, 1)[0];
             gangTile = addedTile;
+            resolvedGangType = 'bu';
             meld.push(addedTile);
-            isAnOrBuGang = true;
             break;
           }
         }
@@ -3653,6 +3782,9 @@ function handleGang() {
     }
   }
 
+  if (!gangTile || !resolvedGangType) return;
+
+  const isAnOrBuGang = resolvedGangType === 'an' || resolvedGangType === 'bu';
   if (kongedOpponentSeat !== null && kongedOpponentSeat > 0 && kongedOpponentSeat <= 3) {
     playerKongExtra.value[kongedOpponentSeat - 1] += 10;
     seatKongScores.value[0] += 10;
@@ -3665,24 +3797,17 @@ function handleGang() {
       seatKongScores.value[i + 1] -= 10;
     }
     seatKongScores.value[0] += 30;
-    kongRecords.value.push('您暗杠/补杠各得三家10分 (+30分，三家各多输10分)');
+    kongRecords.value.push(resolvedGangType === 'an' ? '您暗杠各得三家10分 (+30分，三家各多输10分)' : '您补杠各得三家10分 (+30分，三家各多输10分)');
   }
 
   // 杠后从牌墙末尾补一张牌入座 (杠上自摸机会)
+  let suppTile: MahjongTile | null = null;
   if (wallPool.length > 0) {
-    const supp = wallPool.pop()!;
+    suppTile = wallPool.pop()!;
     wallCount.value = wallPool.length;
-    myHand.value.push(supp);
+    myHand.value.push(suppTile);
     myHand.value = sortHand(myHand.value);
-
-    // 杠后摸到第4张红中直接胡牌结束游戏！
-    if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
-      drawTable();
-      triggerMahjongWin(0, true);
-      return;
-    }
-
-    tipMessage.value = `杠牌成功！补得【${supp.text}】，请自摸胡牌或出牌`;
+    tipMessage.value = `杠牌成功！补得【${suppTile.text}】，请自摸胡牌或出牌`;
   } else {
     tipMessage.value = '杠牌成功！牌墙已空，请打出一张牌';
   }
@@ -3692,11 +3817,19 @@ function handleGang() {
   sendGameMove('gang', {
     absSeat: mySeat.value,
     tile: gangTile,
-    isMingGang: !isAnOrBuGang,
-    gangType: isAnOrBuGang ? 'an_or_bu' : 'ming',
+    suppTile,
+    isMingGang: resolvedGangType === 'ming',
+    gangType: resolvedGangType,
     fromSeat: kongedOpponentSeat !== null ? relToAbsSeat(kongedOpponentSeat) : undefined,
   });
   saveLocalSnapshot();
+
+  // 杠后摸到第4张红中直接胡牌结束游戏！
+  if (suppTile && isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
+    triggerMahjongWin(0, true);
+    return;
+  }
+
   if (isAutoHost.value) {
     checkAutoHostTurn();
   } else {
@@ -3780,6 +3913,7 @@ function botPlay(seat: number, next: () => void) {
 
     // ② 明杠 (手牌持 3 张同牌 + 抓到他人打出牌)
     if (canMeld && matches.length === 3 && Math.random() < 0.95) {
+      const fromSeat = d.discardBy !== undefined ? d.discardBy : 0;
       const takeThree = matches.slice(0, 3);
       const rmIds = new Set(takeThree.map(c => c.id));
       const remainingHand = botHand.filter(c => !rmIds.has(c.id));
@@ -3788,6 +3922,13 @@ function botPlay(seat: number, next: () => void) {
         discards.value.pop();
       }
       lastDiscarded.value = null;
+      seatKongScores.value[seat] += 10;
+      if (fromSeat >= 0 && fromSeat < 4 && fromSeat !== seat) {
+        seatKongScores.value[fromSeat] -= 10;
+        if (fromSeat === 0) {
+          kongRecords.value.push(`【${SEAT_NAMES[seat]}】明杠您 (-10分)`);
+        }
+      }
       soundFX.playMahjongClack();
       soundFX.speakAction('gang', { isFemale: botIdx === 1 });
       tipMessage.value = `🀄 【${SEAT_NAMES[seat]}】大喊：杠！明杠拿下【${d.text}】`;
@@ -3801,7 +3942,11 @@ function botPlay(seat: number, next: () => void) {
       oppHands.value[botIdx] = sortHand(remainingHand);
       drawTable();
 
-      // 检查杠上开花
+      // 检查杠上开花或四红中
+      if (isHongzhongMode.value && oppHands.value[botIdx].filter(isHongzhong).length === 4) {
+        triggerMahjongWin(seat, true);
+        return;
+      }
       const canGangHu = isHongzhongMode.value ? checkHongzhongWin(oppHands.value[botIdx]) : checkMahjongWin(oppHands.value[botIdx]);
       if (canGangHu) {
         triggerMahjongWin(seat, false);
@@ -3906,24 +4051,72 @@ function botPlay(seat: number, next: () => void) {
     if (!counts.has(k)) counts.set(k, []);
     counts.get(k)!.push(c);
   });
+  let didBotSelfGang = false;
   for (const tiles of counts.values()) {
     if (tiles.length === 4) {
       const ids = new Set(tiles.map(c => c.id));
       const remainingHand = botHand.filter(c => !ids.has(c.id));
       oppMelds.value[botIdx].push(tiles);
+      for (let k = 0; k < 4; k++) {
+        if (k !== seat) seatKongScores.value[k] -= 10;
+      }
+      seatKongScores.value[seat] += 30;
+      kongRecords.value.push(`【${SEAT_NAMES[seat]}】暗杠各家输10分`);
+      soundFX.playMahjongClack();
+      soundFX.speakAction('gang', { isFemale: botIdx === 1 });
       if (wallPool.length > 0) {
         const supp = wallPool.pop() || wallPool.shift()!;
         wallCount.value = wallPool.length;
         remainingHand.push(supp);
       }
       oppHands.value[botIdx] = sortHand(remainingHand);
-      // 检查杠上开花
+      didBotSelfGang = true;
+      if (isHongzhongMode.value && oppHands.value[botIdx].filter(isHongzhong).length === 4) {
+        triggerMahjongWin(seat, true);
+        return;
+      }
       const canGangHu = isHongzhongMode.value ? checkHongzhongWin(oppHands.value[botIdx]) : checkMahjongWin(oppHands.value[botIdx]);
       if (canGangHu) {
         triggerMahjongWin(seat, false);
         return;
       }
       break;
+    }
+  }
+
+  // Check for BuGang (adding a 4th matching tile to an existing 3-tile peng meld)
+  if (!didBotSelfGang) {
+    for (const meld of oppMelds.value[botIdx] || []) {
+      if (meld.length === 3 && meld[0].type === meld[1].type && meld[0].value === meld[1].value) {
+        const matchIdx = botHand.findIndex((c) => c.type === meld[0].type && c.value === meld[0].value);
+        if (matchIdx !== -1) {
+          const addedTile = botHand.splice(matchIdx, 1)[0];
+          meld.push(addedTile);
+          for (let k = 0; k < 4; k++) {
+            if (k !== seat) seatKongScores.value[k] -= 10;
+          }
+          seatKongScores.value[seat] += 30;
+          kongRecords.value.push(`【${SEAT_NAMES[seat]}】补杠各家输10分`);
+          soundFX.playMahjongClack();
+          soundFX.speakAction('gang', { isFemale: botIdx === 1 });
+          if (wallPool.length > 0) {
+            const supp = wallPool.pop() || wallPool.shift()!;
+            wallCount.value = wallPool.length;
+            botHand.push(supp);
+          }
+          oppHands.value[botIdx] = sortHand(botHand);
+          if (isHongzhongMode.value && oppHands.value[botIdx].filter(isHongzhong).length === 4) {
+            triggerMahjongWin(seat, true);
+            return;
+          }
+          const canGangHu = isHongzhongMode.value ? checkHongzhongWin(oppHands.value[botIdx]) : checkMahjongWin(oppHands.value[botIdx]);
+          if (canGangHu) {
+            triggerMahjongWin(seat, false);
+            return;
+          }
+          break;
+        }
+      }
     }
   }
 
@@ -3991,6 +4184,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     wallCount.value = typeof evt.wallRemaining === 'number' ? evt.wallRemaining : wallPool.length;
     if (drawnTile) {
       oppHands.value[botIdx].push(drawnTile);
+      lastDrawnTileIdByRelSeat[relSeat] = drawnTile.id || null;
     }
     turnPlayer.value = relSeat;
     startTurnCountdown();
@@ -4028,7 +4222,13 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     // 🛡️ 1. 回滚竞争态中抢跑误摸的牌（碰牌优先于摸牌）
     // 如果本地玩家手牌已为 3k+2（如摸了牌变成14张），必须回滚撤销摸牌，恢复为13张！
     if (myHand.value.length % 3 === 2) {
-      const premature = myHand.value.pop();
+      const targetMyId = (evt.canceledDrawSeat === mySeat.value && evt.canceledDrawTile?.id)
+        ? evt.canceledDrawTile.id
+        : (lastOptimisticDrawId || lastDrawnTileIdByRelSeat[0]);
+      const myIdx = targetMyId ? myHand.value.findIndex((c) => c.id === targetMyId) : -1;
+      const premature = myIdx >= 0 ? myHand.value.splice(myIdx, 1)[0] : myHand.value.pop();
+      lastOptimisticDrawId = null;
+      lastDrawnTileIdByRelSeat[0] = null;
       if (premature) {
         wallPool.unshift(premature);
         wallCount.value = wallPool.length;
@@ -4039,10 +4239,16 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     // 回滚其他对手席位误摸的牌
     for (let b = 0; b < 3; b++) {
       if (b !== botIdx) {
+        const oppRel = b + 1;
         const mCount = (oppMelds.value[b] || []).length;
         const expected = 13 - mCount * 3;
         while (oppHands.value[b] && oppHands.value[b].length > expected) {
-          const popped = oppHands.value[b].pop();
+          const targetOppId = (evt.canceledDrawSeat !== undefined && absToRelSeat(Number(evt.canceledDrawSeat)) === oppRel && evt.canceledDrawTile?.id)
+            ? evt.canceledDrawTile.id
+            : lastDrawnTileIdByRelSeat[oppRel];
+          const oppIdx = targetOppId ? oppHands.value[b].findIndex((c) => c.id === targetOppId) : -1;
+          const popped = oppIdx >= 0 ? oppHands.value[b].splice(oppIdx, 1)[0] : oppHands.value[b].pop();
+          lastDrawnTileIdByRelSeat[oppRel] = null;
           if (popped) {
             wallPool.unshift(popped);
             wallCount.value = wallPool.length;
@@ -4086,10 +4292,31 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     drawTable();
     saveLocalSnapshot();
   } else if (evt.action === 'gang') {
+    const oppMeldsList = oppMelds.value[botIdx] || [];
+    const tile = evt.tile || lastDiscarded.value;
+    let gType: 'ming' | 'an' | 'bu' = 'ming';
+    if (evt.gangType === 'bu') {
+      gType = 'bu';
+    } else if (evt.gangType === 'an') {
+      gType = 'an';
+    } else if (evt.gangType === 'an_or_bu') {
+      const hasPeng = Boolean(tile && oppMeldsList.some((m) => m.length === 3 && m[0].type === tile.type && m[0].value === tile.value));
+      gType = hasPeng ? 'bu' : 'an';
+    } else if (!evt.isMingGang && evt.fromSeat === undefined && !(lastDiscarded.value && lastDiscarded.value.discardBy !== relSeat)) {
+      const hasPeng = Boolean(tile && oppMeldsList.some((m) => m.length === 3 && m[0].type === tile.type && m[0].value === tile.value));
+      gType = hasPeng ? 'bu' : 'an';
+    }
+
     // 🛡️ 明杠同样具有截击出牌优先级，回滚非杠牌席位的抢跑摸牌
-    if (lastDiscarded.value) {
+    if (gType === 'ming' && lastDiscarded.value) {
       if (myHand.value.length % 3 === 2) {
-        const premature = myHand.value.pop();
+        const targetMyId = (evt.canceledDrawSeat === mySeat.value && evt.canceledDrawTile?.id)
+          ? evt.canceledDrawTile.id
+          : (lastOptimisticDrawId || lastDrawnTileIdByRelSeat[0]);
+        const myIdx = targetMyId ? myHand.value.findIndex((c) => c.id === targetMyId) : -1;
+        const premature = myIdx >= 0 ? myHand.value.splice(myIdx, 1)[0] : myHand.value.pop();
+        lastOptimisticDrawId = null;
+        lastDrawnTileIdByRelSeat[0] = null;
         if (premature) {
           wallPool.unshift(premature);
           wallCount.value = wallPool.length;
@@ -4098,10 +4325,16 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
       }
       for (let b = 0; b < 3; b++) {
         if (b !== botIdx) {
+          const oppRel = b + 1;
           const mCount = (oppMelds.value[b] || []).length;
           const expected = 13 - mCount * 3;
           while (oppHands.value[b] && oppHands.value[b].length > expected) {
-            const popped = oppHands.value[b].pop();
+            const targetOppId = (evt.canceledDrawSeat !== undefined && absToRelSeat(Number(evt.canceledDrawSeat)) === oppRel && evt.canceledDrawTile?.id)
+              ? evt.canceledDrawTile.id
+              : lastDrawnTileIdByRelSeat[oppRel];
+            const oppIdx = targetOppId ? oppHands.value[b].findIndex((c) => c.id === targetOppId) : -1;
+            const popped = oppIdx >= 0 ? oppHands.value[b].splice(oppIdx, 1)[0] : oppHands.value[b].pop();
+            lastDrawnTileIdByRelSeat[oppRel] = null;
             if (popped) {
               wallPool.unshift(popped);
               wallCount.value = wallPool.length;
@@ -4113,30 +4346,67 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     stopClaimCountdown();
     isClaiming.value = false;
     pendingPengTurn.value = relSeat;
-    const tile = evt.tile || lastDiscarded.value;
+
+    const fromRelSeat = evt.fromSeat !== undefined
+      ? absToRelSeat(Number(evt.fromSeat))
+      : (lastDiscarded.value?.discardBy ?? 0);
+
     const oppHand = oppHands.value[botIdx] || [];
     if (tile) {
+      const removeNeed = gType === 'bu' ? 1 : (gType === 'an' ? 4 : 3);
       let removedCount = 0;
-      let filtered = oppHand.filter((c) => {
-        if (removedCount < 3 && c.type === tile.type && c.value === tile.value) {
+      const filtered = oppHand.filter((c) => {
+        if (removedCount < removeNeed && c.type === tile.type && c.value === tile.value) {
           removedCount++;
           return false;
         }
         return true;
       });
-      while (removedCount < 3 && filtered.length > 0) {
+      while (removedCount < removeNeed && filtered.length > 0) {
         filtered.pop();
         removedCount++;
       }
       oppHands.value[botIdx] = filtered;
-      oppMelds.value[botIdx].push([tile, tile, tile, tile]);
-      if (discards.value.length > 0 && discards.value[discards.value.length - 1].id === tile.id) {
-        discards.value.pop();
+
+      if (gType === 'bu') {
+        const existingPeng = oppMeldsList.find((m) => m.length === 3 && m[0].type === tile.type && m[0].value === tile.value);
+        if (existingPeng) {
+          existingPeng.push(tile);
+        } else {
+          oppMelds.value[botIdx].push([tile, tile, tile, tile]);
+        }
+      } else {
+        oppMelds.value[botIdx].push([tile, tile, tile, tile]);
+        if (gType === 'ming') {
+          if (discards.value.length > 0 && discards.value[discards.value.length - 1].id === tile.id) {
+            discards.value.pop();
+          } else {
+            const dIdx = discards.value.findIndex((c) => c.id === tile.id);
+            if (dIdx >= 0) discards.value.splice(dIdx, 1);
+          }
+          lastDiscarded.value = null;
+        }
       }
-      lastDiscarded.value = null;
     }
+
+    if (gType === 'ming' && fromRelSeat >= 0 && fromRelSeat < 4 && fromRelSeat !== relSeat) {
+      seatKongScores.value[relSeat] += 10;
+      seatKongScores.value[fromRelSeat] -= 10;
+      if (fromRelSeat === 0) {
+        kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】明杠您 (-10分)`);
+      }
+    } else {
+      for (let k = 0; k < 4; k++) {
+        if (k !== relSeat) seatKongScores.value[k] -= 10;
+      }
+      seatKongScores.value[relSeat] += 30;
+      kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】${gType === 'an' ? '暗杠' : '补杠'}各家输10分`);
+    }
+
     if (wallPool.length > 0) {
-      const supp = wallPool.pop();
+      const supp = evt.suppTile
+        ? (wallPool.splice(Math.max(0, wallPool.findIndex((t) => t.id === evt.suppTile.id)), 1)[0] || wallPool.pop())
+        : wallPool.pop();
       wallCount.value = wallPool.length;
       if (supp) {
         oppHands.value[botIdx].push(supp);
@@ -4144,6 +4414,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     }
     turnPlayer.value = relSeat;
     ensureOpponentHandSize(botIdx);
+    startTurnCountdown();
     soundFX.playMahjongClack();
     soundFX.speakAction('gang', { isFemale: botIdx === 1 });
     tipMessage.value = `🀄 【${SEAT_NAMES[relSeat]}】 大喊：杠！`;
@@ -4151,7 +4422,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     saveLocalSnapshot();
   } else if (evt.action === 'hu') {
     if (hasWon.value || showSettlement.value || dealingPhase.value === 'settled') return;
-    triggerMahjongWin(relSeat, Boolean(evt.isFourHz), evt);
+    triggerMahjongWin(relSeat, Boolean(evt.isFourHz), { ...evt, fromServerWs: true });
   } else if (evt.action === 'pass') {
     if (turnPlayer.value === relSeat) {
       passTurnToNext(relSeat);
@@ -4192,8 +4463,9 @@ function onWsMessage(ev: MessageEvent) {
         dealNewMatch(undefined, false, msg.deal);
       }
     } else if (msg.type === 'scene_room_update') {
-      if (msg.room && Array.isArray(msg.room.players)) {
-        msg.room.players.forEach((p: any) => {
+      const updatedPlayers = msg.room?.players || msg.players;
+      if (Array.isArray(updatedPlayers)) {
+        updatedPlayers.forEach((p: any) => {
           if (p && typeof p.seat === 'number') {
             if (p.isAutoManaged || p.isDisconnected) {
               autoManagedSeats.value[p.seat] = true;
@@ -4242,6 +4514,52 @@ function onWsMessage(ev: MessageEvent) {
         evt.action = msg.payload?.action || msg.event?.action;
       }
       if (!evt || !evt.action) return;
+
+      if (evt.action === 'draw_rejected' || evt.action === 'discard_rejected') {
+        const targetAbs = typeof evt.absSeat === 'number' ? evt.absSeat : (typeof evt.seat === 'number' ? evt.seat : -1);
+        if (targetAbs === mySeat.value) {
+          if (evt.action === 'draw_rejected' && myHand.value.length % 3 === 2) {
+            const drawId = lastOptimisticDrawId || lastDrawnTileIdByRelSeat[0];
+            const idx = drawId ? myHand.value.findIndex((c) => c.id === drawId) : -1;
+            const rolled = idx >= 0 ? myHand.value.splice(idx, 1)[0] : myHand.value.pop();
+            lastOptimisticDrawId = null;
+            lastDrawnTileIdByRelSeat[0] = null;
+            selectedIndex.value = null;
+            if (rolled) {
+              wallPool.unshift(rolled);
+            }
+          } else if (evt.action === 'discard_rejected' && evt.tile && myHand.value.length % 3 === 1) {
+            const dIdx = discards.value.findIndex((c) => c.id === evt.tile.id);
+            const restored = dIdx >= 0 ? discards.value.splice(dIdx, 1)[0] : evt.tile;
+            if (restored) {
+              delete restored.discardBy;
+              myHand.value = sortHand([...myHand.value, restored]);
+              lastDiscarded.value = discards.value.length > 0 ? discards.value[discards.value.length - 1] : null;
+            }
+          }
+          const bs = msg.boardState;
+          if (typeof evt.turnSeat === 'number') {
+            turnPlayer.value = absToRelSeat(evt.turnSeat);
+          } else if (typeof bs?.turnSeat === 'number') {
+            turnPlayer.value = absToRelSeat(bs.turnSeat);
+          }
+          if (evt.pendingPengSeat !== undefined) {
+            pendingPengTurn.value = evt.pendingPengSeat !== null ? absToRelSeat(evt.pendingPengSeat) : null;
+          } else if (bs?.extraState?.pendingPengSeat !== undefined) {
+            pendingPengTurn.value = bs.extraState.pendingPengSeat !== null ? absToRelSeat(bs.extraState.pendingPengSeat) : null;
+          }
+          if (typeof evt.wallRemaining === 'number') {
+            wallCount.value = evt.wallRemaining;
+          } else if (typeof bs?.extraState?.wallRemaining === 'number') {
+            wallCount.value = bs.extraState.wallRemaining;
+          }
+          stopTurnCountdown();
+          if (evt.reason) tipMessage.value = `⚠️ ${evt.reason}`;
+          drawTable();
+          saveLocalSnapshot();
+        }
+        return;
+      }
 
       if (evt.action === 'draw_stalemate') {
         isDrawStalemate.value = true;
@@ -4297,9 +4615,28 @@ function onWsMessage(ev: MessageEvent) {
       } else if (evtAbsSeat === mySeat.value) {
         if (evt.action === 'draw') {
           stopClaimCountdown();
-          // 🛡️ 如果当前手牌已为 3k+2（如本地已碰牌等待出牌），忽略过时的摸牌回执
           if (myHand.value.length % 3 === 2) {
-            console.warn('🛡️ [麻将防锁死] 手牌已为 3k+2，跳过重复或过时的摸牌回执');
+            // Reconcile optimistic local draw against server-authoritative tile
+            const targetId = lastOptimisticDrawId || lastDrawnTileIdByRelSeat[0];
+            if (evt.tile && targetId && evt.tile.id !== targetId) {
+              const optIdx = myHand.value.findIndex((c) => c.id === targetId);
+              if (optIdx >= 0) {
+                const replaced = myHand.value.splice(optIdx, 1, evt.tile)[0];
+                if (replaced) wallPool.unshift(replaced);
+                const wIdx = wallPool.findIndex((t) => t.id === evt.tile.id);
+                if (wIdx >= 0) wallPool.splice(wIdx, 1);
+                tipMessage.value = `摸到了【${evt.tile.text}】${isHongzhong(evt.tile) && isHongzhongMode.value ? '(红中百搭万能)' : ''}，请自摸胡牌或点击出牌`;
+                if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
+                  drawTable();
+                  triggerMahjongWin(0, true);
+                  return;
+                }
+              }
+            }
+            lastOptimisticDrawId = null;
+            if (evt.tile?.id) lastDrawnTileIdByRelSeat[0] = evt.tile.id;
+            if (typeof evt.wallRemaining === 'number') wallCount.value = evt.wallRemaining;
+            drawTable();
             return;
           }
           turnPlayer.value = 0;
@@ -4319,6 +4656,8 @@ function onWsMessage(ev: MessageEvent) {
             wallCount.value = typeof evt.wallRemaining === 'number' ? evt.wallRemaining : wallPool.length;
             if (tileToAdd) {
               myHand.value.push(tileToAdd);
+              lastOptimisticDrawId = null;
+              lastDrawnTileIdByRelSeat[0] = tileToAdd.id || null;
               soundFX.playMahjongClack();
               haptics.mahjongClack();
               tipMessage.value = `摸到了【${tileToAdd.text}】${isHongzhong(tileToAdd) && isHongzhongMode.value ? '(红中百搭万能)' : ''}，请自摸胡牌或点击出牌`;
@@ -4331,15 +4670,32 @@ function onWsMessage(ev: MessageEvent) {
               }
             }
           }
+        } else if (evt.action === 'hu') {
+          if (!hasWon.value && !showSettlement.value && dealingPhase.value !== 'settled') {
+            triggerMahjongWin(0, Boolean(evt.isFourHz), { ...evt, fromServerWs: true });
+          }
         } else if (evt.autoDiscard) {
-          // 服务端超时判定为本家自动打牌
-          if (myHand.value.length > 0) {
-            const disc = myHand.value.pop()!;
+          // 服务端超时判定为本家自动打牌：严格按 evt.tile 匹配移除
+          pendingPengTurn.value = null;
+          stopTurnCountdown();
+          let disc: MahjongTile | undefined;
+          if (evt.tile && myHand.value.length > 0) {
+            const idx = myHand.value.findIndex((c) => c.id === evt.tile.id || (c.type === evt.tile.type && c.value === evt.tile.value));
+            if (idx >= 0) {
+              disc = myHand.value.splice(idx, 1)[0];
+            } else {
+              disc = myHand.value.pop();
+            }
+          } else if (myHand.value.length > 0) {
+            disc = myHand.value.pop();
+          }
+          if (disc) {
             disc.discardBy = 0;
             discards.value.push(disc);
             lastDiscarded.value = disc;
             myHand.value = sortHand(myHand.value);
           }
+          selectedIndex.value = null;
           isAutoHost.value = true;
           if (evt.nextTurn !== undefined) {
             turnPlayer.value = absToRelSeat(evt.nextTurn);
@@ -4347,6 +4703,7 @@ function onWsMessage(ev: MessageEvent) {
             turnPlayer.value = 1;
           }
           drawTable();
+          saveLocalSnapshot();
         }
       }
     }
@@ -4354,6 +4711,15 @@ function onWsMessage(ev: MessageEvent) {
 }
 
 let cleanupMahjongLoader: (() => void) | null = null;
+
+watch(() => props.ws, (newWs, oldWs) => {
+  if (oldWs) {
+    try { oldWs.removeEventListener('message', onWsMessage); } catch {}
+  }
+  if (newWs) {
+    try { newWs.addEventListener('message', onWsMessage); } catch {}
+  }
+});
 
 onMounted(() => {
   preloadMahjongAssets();
@@ -4383,6 +4749,14 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   cleanupMahjongLoader?.();
+  if (drawRafId !== null) {
+    cancelAnimationFrame(drawRafId);
+    drawRafId = null;
+  }
+  if (snapshotTimer) {
+    clearTimeout(snapshotTimer);
+    snapshotTimer = null;
+  }
   if (props.ws) {
     try {
       props.ws.removeEventListener('message', onWsMessage);

@@ -3488,11 +3488,16 @@ function onGameMove(payload: any) {
   const currentRoomIdVal = activeRoomId.value || activeRoom.value?.id;
 
   // 1. 严格过滤非本家出牌广播与内部防回环：避免其他客户端或内部动画回调将远端事件反向广播回 WebSocket 导致死循环
-  const myUserIdx = currentWaitingRoomPlayers.value.findIndex(
-    (p) => (userProfile.id && p.id === userProfile.id) || (userProfile.name && p.name === userProfile.name)
-  );
-  const matchedPlayer = myUserIdx >= 0 ? currentWaitingRoomPlayers.value[myUserIdx] : null;
-  const selfSeat = typeof matchedPlayer?.seat === 'number' ? matchedPlayer.seat : (myUserIdx >= 0 ? myUserIdx : 0);
+  const matchedPlayer = currentWaitingRoomPlayers.value.find((p) => {
+    if (!p) return false;
+    if (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || (p as any).originalId === myAssignedPlayerId.value)) return true;
+    if (userProfile.id && (p.id === userProfile.id || (p as any).originalId === userProfile.id)) return true;
+    if (userProfile.name && (p.name === userProfile.name || (p as any).originalName === userProfile.name)) return true;
+    return false;
+  });
+  const selfSeat = myAssignedSeat.value !== null
+    ? myAssignedSeat.value
+    : (typeof matchedPlayer?.seat === 'number' ? matchedPlayer.seat : 0);
 
   // 若该动作为远端动作、已跳过标记、或席位与当前客户端自身席位不一致，坚决不向服务器回传
   const isSelfMove = typeof payload?.seat !== 'number' || payload.seat === selfSeat;

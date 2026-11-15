@@ -37,12 +37,12 @@ function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: bo
   const serverMeldsRaw = room.boardState.extraState?.mahjongMelds?.[winnerSeat] || [];
   const fallbackWinningMelds = Array.isArray(serverMeldsRaw)
     ? serverMeldsRaw
-        .map((m: any) => (Array.isArray(m) ? m : m?.tile ? Array(m.type === 'gang' ? 4 : 3).fill(m.tile) : []))
+        .map((m: any) => (Array.isArray(m) ? m : Array.isArray(m?.tiles) ? m.tiles : m?.tile ? Array(m.type === 'gang' ? 4 : 3).fill(m.tile) : []))
         .filter((arr: any[]) => arr.length > 0)
     : [];
-  const resolvedWinningMelds = (Array.isArray(pPayload?.winningMelds) && pPayload.winningMelds.length > 0)
-    ? pPayload.winningMelds
-    : fallbackWinningMelds;
+  const resolvedWinningMelds = fallbackWinningMelds.length > 0
+    ? fallbackWinningMelds
+    : (Array.isArray(pPayload?.winningMelds) ? pPayload.winningMelds : []);
 
   const resolvedKongScores: [number, number, number, number] =
     (Array.isArray(room.boardState.seatKongScores) && room.boardState.seatKongScores.length === 4)
@@ -729,7 +729,7 @@ wss.on('connection', (ws) => {
                 room: targetRoom,
                 boardState: authRoom ? authRoom.boardState : null,
                 players: targetRoom.players,
-                deal: (targetRoom as any).deal || (authRoom ? (authRoom as any).deal : null),
+                deal: (authRoom ? (authRoom as any).deal : null) || (targetRoom as any).deal || null,
                 serverTs: Date.now(),
               })
             );
@@ -1633,33 +1633,6 @@ wss.on('connection', (ws) => {
             return;
           }
 
-          room.moveCount = (room.moveCount || 0) + 1;
-          bs.actionSeq = (bs.actionSeq || 0) + 1;
-          bs.moveCount = room.moveCount;
-          bs.updatedAt = Date.now();
-          room.lastTurnTs = Date.now();
-
-          if (p.multiplier) bs.multiplier = Number(p.multiplier);
-          if (p.nextTurn !== undefined) {
-            bs.turnSeat = Number(p.nextTurn);
-            room.turnSeat = bs.turnSeat;
-          }
-          if (combo) {
-            bs.lastCombo = combo;
-            if (!bs.discardsHistory) bs.discardsHistory = [];
-            bs.discardsHistory.push(combo);
-            if (bs.discardsHistory.length > 100) {
-              bs.discardsHistory = bs.discardsHistory.slice(-100);
-            }
-          }
-          if (p.handsCount && Array.isArray(p.handsCount)) {
-            bs.handsCount = p.handsCount;
-          } else if (seat < bs.handsCount.length && p.cardsCount) {
-            bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - Number(p.cardsCount));
-          } else if (combo?.cards?.length && seat < bs.handsCount.length) {
-            bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - combo.cards.length);
-          }
-
           if (room.gameType === 'mahjong') {
             if (!bs.extraState) bs.extraState = {};
             if (!bs.extraState.mahjongDiscards) bs.extraState.mahjongDiscards = [];
@@ -1668,49 +1641,78 @@ wss.on('connection', (ws) => {
               bs.extraState.wallRemaining = (room as any).deal?.remainingWall?.length ?? 83;
             }
 
+            const isHongzhongMode = room.sceneMode?.includes('hongzhong') ?? true;
+            const isTileMatch = (a: any, b: any) => Boolean(a && b && a.type === b.type && Number(a.value) === Number(b.value));
+            const isRedDragonTile = (t: any) => Boolean(t && t.type === 'zi' && (Number(t.value) === 5 || t.text === '红中' || t.isRedDragon));
+            const sendMahjongReject = (rejectAction: string, reason: string, extra: Record<string, any> = {}) => {
+              const seatHand = Array.isArray((room as any).deal?.seatCards?.[seat]) ? [...(room as any).deal.seatCards[seat]] : undefined;
+              const rejectEvt = {
+                action: rejectAction,
+                seat,
+                absSeat: seat,
+                turnSeat: bs.turnSeat,
+                pendingPengSeat: bs.extraState?.pendingPengSeat ?? null,
+                wallRemaining: bs.extraState?.wallRemaining ?? ((room as any).deal?.remainingWall?.length ?? 0),
+                seatHand,
+                reason,
+                ...extra,
+              };
+              try {
+                ws.send(JSON.stringify({
+                  type: 'game_event',
+                  roomId: room.id,
+                  seat,
+                  event: rejectEvt,
+                  payload: rejectEvt,
+                  boardState: bs,
+                }));
+              } catch {}
+            };
+
             const tile = p.tile || evt.tile;
             if (action === 'discard') {
+              const sCards: any[] | undefined = (room as any).deal?.seatCards?.[seat];
               if (
                 (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) ||
                 (typeof bs.turnSeat === 'number' && bs.turnSeat !== seat)
               ) {
                 console.warn(`🛡️ [服务端拦截出牌] 当前轮到席位 ${bs.turnSeat} (pendingPengSeat=${bs.extraState.pendingPengSeat})，拒绝席位 ${seat} 的非法出牌`);
-                const rejectEvt = {
-                  action: 'discard_rejected',
-                  seat,
-                  absSeat: seat,
-                  turnSeat: bs.turnSeat,
-                  pendingPengSeat: bs.extraState.pendingPengSeat,
-                  wallRemaining: bs.extraState.wallRemaining,
-                };
-                try {
-                  ws.send(JSON.stringify({
-                    type: 'game_event',
-                    roomId: room.id,
-                    seat,
-                    event: rejectEvt,
-                    payload: rejectEvt,
-                    boardState: bs,
-                  }));
-                } catch {}
+                sendMahjongReject('discard_rejected', 'not_your_turn', { tile });
                 return;
               }
-              if (tile) {
-                const discTile = { ...tile, discardBy: seat };
+              if (Array.isArray(sCards) && sCards.length % 3 !== 2) {
+                console.warn(`🛡️ [服务端拦截出牌] 席位 ${seat} 手牌数为 ${sCards.length}，不符合 3k+2 出牌条件`);
+                sendMahjongReject('discard_rejected', 'invalid_hand_count', { tile });
+                return;
+              }
+              let matchedTile = tile;
+              if (Array.isArray(sCards)) {
+                if (!tile) {
+                  sendMahjongReject('discard_rejected', 'missing_tile');
+                  return;
+                }
+                let fIdx = tile.id ? sCards.findIndex((c: any) => c.id === tile.id) : -1;
+                if (fIdx < 0) {
+                  fIdx = sCards.findIndex((c: any) => isTileMatch(c, tile));
+                }
+                if (fIdx < 0) {
+                  console.warn(`🛡️ [服务端拦截出牌] 席位 ${seat} 试图打出手中不存在的牌: ${tile.text || tile.value}`);
+                  sendMahjongReject('discard_rejected', 'tile_not_in_hand', { tile });
+                  return;
+                }
+                matchedTile = sCards.splice(fIdx, 1)[0];
+              }
+              if (matchedTile) {
+                const discTile = { ...matchedTile, discardBy: seat };
                 bs.extraState.mahjongDiscards.push(discTile);
                 bs.extraState.lastDiscarded = discTile;
+                p.tile = discTile;
                 if (!bs.discardsHistory) bs.discardsHistory = [];
-                bs.discardsHistory.push({ type: 'mahjong_discard', rank: tile.value || 0, cards: [discTile], seat });
-
-                // Keep authoritative deal.seatCards in sync
-                if ((room as any).deal?.seatCards?.[seat]) {
-                  const sCards = (room as any).deal.seatCards[seat];
-                  const fIdx = sCards.findIndex((c: any) => c.id === tile.id || (c.type === tile.type && c.value === tile.value));
-                  if (fIdx >= 0) sCards.splice(fIdx, 1);
-                  else if (sCards.length > 0) sCards.pop();
-                }
+                bs.discardsHistory.push({ type: 'mahjong_discard', rank: discTile.value || 0, cards: [discTile], seat });
               }
-              if (bs.handsCount && bs.handsCount[seat] > 0) {
+              if (Array.isArray(sCards)) {
+                bs.handsCount[seat] = sCards.length;
+              } else if (bs.handsCount && bs.handsCount[seat] > 0) {
                 bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - 1);
               }
               if (p.nextTurn !== undefined) {
@@ -1723,53 +1725,27 @@ wss.on('connection', (ws) => {
               bs.extraState.pendingPengSeat = null;
               bs.extraState.lastDrawnSeat = null;
               bs.extraState.lastDrawnTile = null;
+              room.moveCount = (room.moveCount || 0) + 1;
+              bs.actionSeq = (bs.actionSeq || 0) + 1;
+              bs.moveCount = room.moveCount;
+              bs.updatedAt = Date.now();
               room.lastTurnTs = Date.now();
             } else if (action === 'draw') {
               // 🛡️ 碰牌优先级仲裁：若有席位刚刚碰牌正在等待出牌，拒绝非碰牌席位并发抢跑摸牌并通知回滚
               if (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) {
                 console.warn(`🛡️ [服务端拦截摸牌] 席位 ${bs.extraState.pendingPengSeat} 已碰牌正在等待出牌，拦截席位 ${seat} 的违规摸牌`);
-                const rejectEvt = {
-                  action: 'draw_rejected',
-                  seat,
-                  absSeat: seat,
-                  turnSeat: bs.turnSeat,
-                  pendingPengSeat: bs.extraState.pendingPengSeat,
-                  wallRemaining: bs.extraState.wallRemaining,
-                  reason: 'pending_peng',
-                };
-                try {
-                  ws.send(JSON.stringify({
-                    type: 'game_event',
-                    roomId: room.id,
-                    seat,
-                    event: rejectEvt,
-                    payload: rejectEvt,
-                    boardState: bs,
-                  }));
-                } catch {}
+                sendMahjongReject('draw_rejected', 'pending_peng');
                 return;
               }
               if (bs.turnSeat !== seat) {
                 console.warn(`🛡️ [服务端拦截摸牌] 当前轮到席位 ${bs.turnSeat}，拦截席位 ${seat} 的非轮次摸牌`);
-                const rejectEvt = {
-                  action: 'draw_rejected',
-                  seat,
-                  absSeat: seat,
-                  turnSeat: bs.turnSeat,
-                  pendingPengSeat: bs.extraState.pendingPengSeat,
-                  wallRemaining: bs.extraState.wallRemaining,
-                  reason: 'not_your_turn',
-                };
-                try {
-                  ws.send(JSON.stringify({
-                    type: 'game_event',
-                    roomId: room.id,
-                    seat,
-                    event: rejectEvt,
-                    payload: rejectEvt,
-                    boardState: bs,
-                  }));
-                } catch {}
+                sendMahjongReject('draw_rejected', 'not_your_turn');
+                return;
+              }
+              const sCards: any[] | undefined = (room as any).deal?.seatCards?.[seat];
+              if (Array.isArray(sCards) && sCards.length % 3 !== 1) {
+                console.warn(`🛡️ [服务端拦截摸牌] 席位 ${seat} 当前手牌 ${sCards.length} 张，不可重复摸牌`);
+                sendMahjongReject('draw_rejected', 'already_drew');
                 return;
               }
               const wallArr = (room as any).deal?.remainingWall;
@@ -1822,6 +1798,10 @@ wss.on('connection', (ws) => {
               p.wallRemaining = wallArr.length;
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
+              room.moveCount = (room.moveCount || 0) + 1;
+              bs.actionSeq = (bs.actionSeq || 0) + 1;
+              bs.moveCount = room.moveCount;
+              bs.updatedAt = Date.now();
               room.lastTurnTs = Date.now();
               if (bs.handsCount) {
                 bs.handsCount[seat] = (room as any).deal?.seatCards?.[seat]?.length ?? ((bs.handsCount[seat] || 13) + 1);
@@ -1829,11 +1809,31 @@ wss.on('connection', (ws) => {
               bs.extraState.lastDrawnSeat = seat;
               bs.extraState.lastDrawnTile = drawn;
             } else if (action === 'peng') {
-              // 防止多人并发碰同一张牌或弃牌已被认领
-              if (!bs.extraState.lastDiscarded || (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined)) {
-                console.warn(`🛡️ [服务端拦截重复碰牌] 席位 ${seat} 尝试碰牌，但当前弃牌已被认领 (pendingPengSeat=${bs.extraState.pendingPengSeat})`);
+              const lastDisc = bs.extraState.lastDiscarded;
+              const sCards: any[] | undefined = (room as any).deal?.seatCards?.[seat];
+              // 防止多人并发碰同一张牌、碰过期牌、碰自己的牌或无真实手牌强碰
+              if (
+                !lastDisc ||
+                (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined) ||
+                lastDisc.discardBy === seat ||
+                !tile ||
+                !isTileMatch(tile, lastDisc) ||
+                (p.targetDiscardId && lastDisc.id !== p.targetDiscardId) ||
+                (isHongzhongMode && isRedDragonTile(lastDisc))
+              ) {
+                console.warn(`🛡️ [服务端拦截无效碰牌] 席位 ${seat} 碰牌目标已失效或不匹配`);
+                sendMahjongReject('claim_rejected', 'discard_not_available', { claimType: 'peng', tile });
                 return;
               }
+              if (Array.isArray(sCards)) {
+                const matchCount = sCards.filter((c: any) => isTileMatch(c, lastDisc)).length;
+                if (sCards.length % 3 !== 1 || matchCount < 2) {
+                  console.warn(`🛡️ [服务端拦截伪造碰牌] 席位 ${seat} 仅有 ${matchCount} 张匹配手牌 (总手牌 ${sCards.length})`);
+                  sendMahjongReject('claim_rejected', 'insufficient_matching_tiles', { claimType: 'peng', tile });
+                  return;
+                }
+              }
+
               // 🛡️ 碰牌截击仲裁：检测是否有下家在竞态中抢跑摸牌，若有，精确移除该摸牌并回滚至牌墙！
               let canceledDrawSeat: number | null = null;
               let canceledDrawTile: any = null;
@@ -1842,7 +1842,7 @@ wss.on('connection', (ws) => {
                 const dSeat = canceledDrawSeat;
                 const drawnRef = bs.extraState.lastDrawnTile;
                 const seatHand = (room as any).deal?.seatCards?.[dSeat];
-                if (Array.isArray(seatHand) && seatHand.length > 0) {
+                if (Array.isArray(seatHand) && seatHand.length % 3 === 2) {
                   let returned: any = null;
                   if (drawnRef?.id) {
                     const idx = seatHand.findIndex((c: any) => c.id === drawnRef.id);
@@ -1867,39 +1867,46 @@ wss.on('connection', (ws) => {
                 console.log(`🛡️ [服务端碰牌优先仲裁] 席位 ${seat} 碰牌成功，席位 ${dSeat} 的抢跑摸牌已回滚入牌墙`);
               }
 
+              let claimedTile = lastDisc;
               if (bs.extraState.mahjongDiscards.length > 0) {
                 const lastIdx = bs.extraState.mahjongDiscards.length - 1;
-                if (!tile || bs.extraState.mahjongDiscards[lastIdx].id === tile.id) {
-                  bs.extraState.mahjongDiscards.pop();
+                if (bs.extraState.mahjongDiscards[lastIdx].id === lastDisc.id) {
+                  claimedTile = bs.extraState.mahjongDiscards.pop();
                 } else {
-                  const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => d.id === tile.id);
-                  if (fIdx >= 0) bs.extraState.mahjongDiscards.splice(fIdx, 1);
+                  const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => d.id === lastDisc.id);
+                  if (fIdx >= 0) claimedTile = bs.extraState.mahjongDiscards.splice(fIdx, 1)[0];
+                }
+              }
+              const removedHandTiles: any[] = [];
+              if (Array.isArray(sCards)) {
+                for (let i = sCards.length - 1; i >= 0 && removedHandTiles.length < 2; i--) {
+                  if (isTileMatch(sCards[i], lastDisc)) {
+                    removedHandTiles.push(sCards.splice(i, 1)[0]);
+                  }
                 }
               }
               if (!bs.extraState.mahjongMelds[seat]) bs.extraState.mahjongMelds[seat] = [];
-              bs.extraState.mahjongMelds[seat].push({ type: 'peng', tile, seat });
+              bs.extraState.mahjongMelds[seat].push({
+                type: 'peng',
+                tile: claimedTile,
+                tiles: [...removedHandTiles, claimedTile],
+                seat,
+              });
               bs.extraState.lastDiscarded = null;
               bs.extraState.pendingPengSeat = seat;
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
+              room.moveCount = (room.moveCount || 0) + 1;
+              bs.actionSeq = (bs.actionSeq || 0) + 1;
+              bs.moveCount = room.moveCount;
+              bs.updatedAt = Date.now();
               room.lastTurnTs = Date.now();
-              if (bs.handsCount && bs.handsCount[seat] >= 2) {
+              if (Array.isArray(sCards)) {
+                bs.handsCount[seat] = sCards.length;
+              } else if (bs.handsCount && bs.handsCount[seat] >= 2) {
                 bs.handsCount[seat] -= 2;
               }
-              if ((room as any).deal?.seatCards?.[seat]) {
-                const sCards = (room as any).deal.seatCards[seat];
-                let removed = 0;
-                for (let i = sCards.length - 1; i >= 0 && removed < 2; i--) {
-                  if (tile && sCards[i].type === tile.type && sCards[i].value === tile.value) {
-                    sCards.splice(i, 1);
-                    removed++;
-                  }
-                }
-                while (removed < 2 && sCards.length > 0) {
-                  sCards.pop();
-                  removed++;
-                }
-              }
+              p.tile = claimedTile;
               p.wallRemaining = bs.extraState.wallRemaining;
               if (canceledDrawSeat !== null) {
                 p.canceledDrawSeat = canceledDrawSeat;
@@ -1907,6 +1914,8 @@ wss.on('connection', (ws) => {
               }
             } else if (action === 'gang') {
               const seatMelds = bs.extraState.mahjongMelds[seat] || [];
+              const sCards: any[] | undefined = (room as any).deal?.seatCards?.[seat];
+              const lastDisc = bs.extraState.lastDiscarded;
               let resolvedGangType: 'ming' | 'an' | 'bu' = 'ming';
               if (p.gangType === 'bu') {
                 resolvedGangType = 'bu';
@@ -1914,31 +1923,89 @@ wss.on('connection', (ws) => {
                 resolvedGangType = 'an';
               } else if (p.gangType === 'an_or_bu') {
                 const hasMatchingPeng = Boolean(
-                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && m.tile.type === tile.type && m.tile.value === tile.value)
+                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && isTileMatch(m.tile, tile))
                 );
                 resolvedGangType = hasMatchingPeng ? 'bu' : 'an';
-              } else if (!p.isMingGang && p.fromSeat === undefined && !(bs.extraState.lastDiscarded && bs.extraState.lastDiscarded.discardBy !== seat)) {
+              } else if (!p.isMingGang && p.fromSeat === undefined && !(lastDisc && lastDisc.discardBy !== seat)) {
                 const hasMatchingPeng = Boolean(
-                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && m.tile.type === tile.type && m.tile.value === tile.value)
+                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && isTileMatch(m.tile, tile))
                 );
                 resolvedGangType = hasMatchingPeng ? 'bu' : 'an';
               }
               p.gangType = resolvedGangType;
 
-              if (resolvedGangType === 'ming' && (!bs.extraState.lastDiscarded || (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined))) {
-                console.warn(`🛡️ [服务端拦截重复明杠] 席位 ${seat} 尝试明杠，但当前弃牌已被认领`);
-                return;
+              if (resolvedGangType === 'ming') {
+                if (
+                  !lastDisc ||
+                  (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined) ||
+                  lastDisc.discardBy === seat ||
+                  !tile ||
+                  !isTileMatch(tile, lastDisc) ||
+                  (p.targetDiscardId && lastDisc.id !== p.targetDiscardId) ||
+                  (isHongzhongMode && isRedDragonTile(lastDisc))
+                ) {
+                  console.warn(`🛡️ [服务端拦截无效明杠] 席位 ${seat} 尝试明杠，但当前弃牌已失效或不匹配`);
+                  sendMahjongReject('claim_rejected', 'discard_not_available', { claimType: 'gang', gangType: 'ming', tile });
+                  return;
+                }
+                if (Array.isArray(sCards)) {
+                  const matchCount = sCards.filter((c: any) => isTileMatch(c, lastDisc)).length;
+                  if (sCards.length % 3 !== 1 || matchCount < 3) {
+                    console.warn(`🛡️ [服务端拦截伪造明杠] 席位 ${seat} 仅有 ${matchCount} 张匹配手牌 (总手牌 ${sCards.length})`);
+                    sendMahjongReject('claim_rejected', 'insufficient_matching_tiles', { claimType: 'gang', gangType: 'ming', tile });
+                    return;
+                  }
+                }
+              } else if (resolvedGangType === 'an') {
+                if (
+                  bs.turnSeat !== seat ||
+                  (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) ||
+                  !tile ||
+                  (isHongzhongMode && isRedDragonTile(tile))
+                ) {
+                  sendMahjongReject('claim_rejected', 'invalid_an_gang', { claimType: 'gang', gangType: 'an', tile });
+                  return;
+                }
+                if (Array.isArray(sCards)) {
+                  const matchCount = sCards.filter((c: any) => isTileMatch(c, tile)).length;
+                  if (sCards.length % 3 !== 2 || matchCount !== 4) {
+                    console.warn(`🛡️ [服务端拦截伪造暗杠] 席位 ${seat} 仅有 ${matchCount} 张匹配手牌`);
+                    sendMahjongReject('claim_rejected', 'insufficient_matching_tiles', { claimType: 'gang', gangType: 'an', tile });
+                    return;
+                  }
+                }
+              } else if (resolvedGangType === 'bu') {
+                const hasMatchingPeng = Boolean(
+                  tile && seatMelds.some((m: any) => m.type === 'peng' && m.tile && isTileMatch(m.tile, tile))
+                );
+                if (
+                  bs.turnSeat !== seat ||
+                  (bs.extraState.pendingPengSeat !== null && bs.extraState.pendingPengSeat !== undefined && bs.extraState.pendingPengSeat !== seat) ||
+                  !tile ||
+                  !hasMatchingPeng
+                ) {
+                  sendMahjongReject('claim_rejected', 'invalid_bu_gang', { claimType: 'gang', gangType: 'bu', tile });
+                  return;
+                }
+                if (Array.isArray(sCards)) {
+                  const matchCount = sCards.filter((c: any) => isTileMatch(c, tile)).length;
+                  if (sCards.length % 3 !== 2 || matchCount < 1) {
+                    console.warn(`🛡️ [服务端拦截伪造补杠] 席位 ${seat} 无匹配补杠手牌`);
+                    sendMahjongReject('claim_rejected', 'insufficient_matching_tiles', { claimType: 'gang', gangType: 'bu', tile });
+                    return;
+                  }
+                }
               }
 
               let canceledDrawSeat: number | null = null;
               let canceledDrawTile: any = null;
-              if (resolvedGangType === 'ming' && (p.isMingGang || (bs.extraState.lastDiscarded && bs.extraState.lastDiscarded.discardBy !== seat))) {
+              if (resolvedGangType === 'ming') {
                 if (bs.extraState.lastDrawnSeat !== null && bs.extraState.lastDrawnSeat !== undefined && bs.extraState.lastDrawnSeat !== seat) {
                   canceledDrawSeat = bs.extraState.lastDrawnSeat;
                   const dSeat = canceledDrawSeat;
                   const drawnRef = bs.extraState.lastDrawnTile;
                   const seatHand = (room as any).deal?.seatCards?.[dSeat];
-                  if (Array.isArray(seatHand) && seatHand.length > 0) {
+                  if (Array.isArray(seatHand) && seatHand.length % 3 === 2) {
                     let returned: any = null;
                     if (drawnRef?.id) {
                       const idx = seatHand.findIndex((c: any) => c.id === drawnRef.id);
@@ -1964,58 +2031,70 @@ wss.on('connection', (ws) => {
                 }
               }
 
+              const targetMatchTile = resolvedGangType === 'ming' ? lastDisc : tile;
               const removeNeeded = resolvedGangType === 'bu' ? 1 : (resolvedGangType === 'an' ? 4 : 3);
-              if ((room as any).deal?.seatCards?.[seat]) {
-                const sCards = (room as any).deal.seatCards[seat];
-                let removed = 0;
-                for (let i = sCards.length - 1; i >= 0 && removed < removeNeeded; i--) {
-                  if (tile && sCards[i].type === tile.type && sCards[i].value === tile.value) {
-                    sCards.splice(i, 1);
-                    removed++;
+              const removedHandTiles: any[] = [];
+              if (Array.isArray(sCards)) {
+                for (let i = sCards.length - 1; i >= 0 && removedHandTiles.length < removeNeeded; i--) {
+                  if (isTileMatch(sCards[i], targetMatchTile)) {
+                    removedHandTiles.push(sCards.splice(i, 1)[0]);
                   }
                 }
-                while (removed < removeNeeded && sCards.length > 0) {
-                  sCards.pop();
-                  removed++;
-                }
               }
-              if (bs.handsCount && typeof bs.handsCount[seat] === 'number') {
+              if (Array.isArray(sCards)) {
+                bs.handsCount[seat] = sCards.length;
+              } else if (bs.handsCount && typeof bs.handsCount[seat] === 'number') {
                 bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - removeNeeded);
               }
 
               if (!bs.extraState.mahjongMelds[seat]) bs.extraState.mahjongMelds[seat] = [];
               if (resolvedGangType === 'bu') {
                 const pengMeldIdx = bs.extraState.mahjongMelds[seat].findIndex(
-                  (m: any) => m.type === 'peng' && m.tile && tile && m.tile.type === tile.type && m.tile.value === tile.value
+                  (m: any) => m.type === 'peng' && m.tile && isTileMatch(m.tile, targetMatchTile)
                 );
+                const addedTile = removedHandTiles[0] || targetMatchTile;
                 if (pengMeldIdx >= 0) {
-                  bs.extraState.mahjongMelds[seat][pengMeldIdx] = { type: 'gang', tile, seat, gangType: 'bu' };
+                  const prevMeld = bs.extraState.mahjongMelds[seat][pengMeldIdx];
+                  const prevTiles = Array.isArray(prevMeld.tiles) ? prevMeld.tiles : [prevMeld.tile, prevMeld.tile, prevMeld.tile];
+                  bs.extraState.mahjongMelds[seat][pengMeldIdx] = {
+                    type: 'gang',
+                    tile: addedTile,
+                    tiles: [...prevTiles, addedTile],
+                    seat,
+                    gangType: 'bu',
+                  };
                 } else {
-                  bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile, seat, gangType: 'bu' });
+                  bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile: addedTile, seat, gangType: 'bu' });
                 }
+                bs.extraState.lastDiscarded = null;
               } else {
+                let claimedTile = targetMatchTile;
                 if (resolvedGangType === 'ming') {
-                  if (bs.extraState.mahjongDiscards.length > 0) {
+                  if (bs.extraState.mahjongDiscards.length > 0 && lastDisc) {
                     const lastIdx = bs.extraState.mahjongDiscards.length - 1;
-                    if (!tile || bs.extraState.mahjongDiscards[lastIdx].id === tile.id) {
-                      bs.extraState.mahjongDiscards.pop();
+                    if (bs.extraState.mahjongDiscards[lastIdx].id === lastDisc.id) {
+                      claimedTile = bs.extraState.mahjongDiscards.pop();
                     } else {
-                      const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => d.id === tile.id);
-                      if (fIdx >= 0) bs.extraState.mahjongDiscards.splice(fIdx, 1);
+                      const fIdx = bs.extraState.mahjongDiscards.findIndex((d: any) => d.id === lastDisc.id);
+                      if (fIdx >= 0) claimedTile = bs.extraState.mahjongDiscards.splice(fIdx, 1)[0];
                     }
                   }
                   bs.extraState.lastDiscarded = null;
+                } else {
+                  bs.extraState.lastDiscarded = null;
                 }
-                bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile, seat, gangType: resolvedGangType });
+                const meldTiles = resolvedGangType === 'ming' ? [...removedHandTiles, claimedTile] : [...removedHandTiles];
+                bs.extraState.mahjongMelds[seat].push({ type: 'gang', tile: claimedTile, tiles: meldTiles, seat, gangType: resolvedGangType });
+                p.tile = claimedTile;
               }
 
               if ((room as any).deal?.remainingWall?.length > 0) {
-                const supp = (room as any).deal.remainingWall.pop() || (room as any).deal.remainingWall.shift();
+                const supp = (room as any).deal.remainingWall.pop();
                 if (supp && (room as any).deal.seatCards?.[seat]) {
                   (room as any).deal.seatCards[seat].push(supp);
                 }
                 if (supp && bs.handsCount && typeof bs.handsCount[seat] === 'number') {
-                  bs.handsCount[seat] += 1;
+                  bs.handsCount[seat] = Array.isArray(sCards) ? sCards.length : (bs.handsCount[seat] + 1);
                 }
                 p.suppTile = supp || null;
                 bs.extraState.lastDrawnSeat = seat;
@@ -2028,8 +2107,11 @@ wss.on('connection', (ws) => {
               }
               p.wallRemaining = bs.extraState.wallRemaining;
               if (!bs.seatKongScores) bs.seatKongScores = [0, 0, 0, 0];
-              const targetOpp = p.fromSeat ?? p.targetSeat ?? p.discardBy;
+              const targetOpp = resolvedGangType === 'ming' && typeof lastDisc?.discardBy === 'number'
+                ? lastDisc.discardBy
+                : (p.fromSeat ?? p.targetSeat ?? p.discardBy);
               if (resolvedGangType === 'ming' && typeof targetOpp === 'number' && targetOpp >= 0 && targetOpp !== seat) {
+                p.fromSeat = targetOpp;
                 bs.seatKongScores[seat] += 10;
                 bs.seatKongScores[targetOpp] -= 10;
               } else {
@@ -2040,6 +2122,10 @@ wss.on('connection', (ws) => {
               }
               bs.turnSeat = seat;
               room.turnSeat = bs.turnSeat;
+              room.moveCount = (room.moveCount || 0) + 1;
+              bs.actionSeq = (bs.actionSeq || 0) + 1;
+              bs.moveCount = room.moveCount;
+              bs.updatedAt = Date.now();
               room.lastTurnTs = Date.now();
               bs.extraState.pendingPengSeat = seat;
               if (canceledDrawSeat !== null) {
@@ -2051,9 +2137,62 @@ wss.on('connection', (ws) => {
                 bs.turnSeat = Number(p.nextTurn);
                 room.turnSeat = bs.turnSeat;
               }
+              room.moveCount = (room.moveCount || 0) + 1;
+              bs.actionSeq = (bs.actionSeq || 0) + 1;
+              bs.moveCount = room.moveCount;
+              bs.updatedAt = Date.now();
             } else if (action === 'hu') {
-              executeMahjongWinSettlement(room, seat, Boolean(p.isFourHz), p);
+              const sCards: any[] = (room as any).deal?.seatCards?.[seat] || [];
+              const seatMelds = bs.extraState.mahjongMelds?.[seat] || [];
+              const expectedTotal = sCards.length + seatMelds.length * 3;
+              const hzCount = isHongzhongMode ? sCards.filter(isRedDragonTile).length : 0;
+              const isFourHzAuth = isHongzhongMode && hzCount >= 4;
+              const winRes = sCards.length % 3 === 2 ? checkMahjongWin(sCards as any, isHongzhongMode) : { win: false, desc: '', fan: 0 };
+
+              if (expectedTotal !== 14 || sCards.length % 3 !== 2 || (!isFourHzAuth && !winRes.win)) {
+                console.warn(`🛡️ [服务端防炸胡拦截] 席位 ${seat} 请求胡牌但手牌校验未通过 (手牌=${sCards.length}, 副露=${seatMelds.length}, 总计=${expectedTotal}, fourHz=${isFourHzAuth}, win=${winRes.win})`);
+                sendMahjongReject('hu_rejected', 'invalid_hu_hand');
+                return;
+              }
+              if (bs.turnSeat !== seat && bs.extraState.pendingPengSeat !== seat) {
+                console.warn(`🛡️ [服务端防炸胡拦截] 非席位 ${seat} 回合 (当前=${bs.turnSeat})，拒绝炮胡或越权胡牌`);
+                sendMahjongReject('hu_rejected', 'not_your_turn');
+                return;
+              }
+
+              room.moveCount = (room.moveCount || 0) + 1;
+              bs.actionSeq = (bs.actionSeq || 0) + 1;
+              bs.moveCount = room.moveCount;
+              bs.updatedAt = Date.now();
+              executeMahjongWinSettlement(room, seat, isFourHzAuth, p);
               return;
+            }
+          } else {
+            room.moveCount = (room.moveCount || 0) + 1;
+            bs.actionSeq = (bs.actionSeq || 0) + 1;
+            bs.moveCount = room.moveCount;
+            bs.updatedAt = Date.now();
+            room.lastTurnTs = Date.now();
+
+            if (p.multiplier) bs.multiplier = Number(p.multiplier);
+            if (p.nextTurn !== undefined) {
+              bs.turnSeat = Number(p.nextTurn);
+              room.turnSeat = bs.turnSeat;
+            }
+            if (combo) {
+              bs.lastCombo = combo;
+              if (!bs.discardsHistory) bs.discardsHistory = [];
+              bs.discardsHistory.push(combo);
+              if (bs.discardsHistory.length > 100) {
+                bs.discardsHistory = bs.discardsHistory.slice(-100);
+              }
+            }
+            if (p.handsCount && Array.isArray(p.handsCount)) {
+              bs.handsCount = p.handsCount;
+            } else if (seat < bs.handsCount.length && p.cardsCount) {
+              bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - Number(p.cardsCount));
+            } else if (combo?.cards?.length && seat < bs.handsCount.length) {
+              bs.handsCount[seat] = Math.max(0, bs.handsCount[seat] - combo.cards.length);
             }
           }
 
@@ -2400,13 +2539,23 @@ setInterval(() => {
         curPlayer?.id?.startsWith('P-sim-') ||
         (room.boardState?.autoManagedSeats && room.boardState.autoManagedSeats[currentSeat])
       );
-      // 关键优化：已托管或断线玩家仅需 1200ms 快速出牌；未托管真人玩家给足 60000ms 思考时间
-      const timeoutThreshold = isPlayerAuto ? 1200 : 60000;
+      const isConnectedManualAuto = Boolean(
+        isPlayerAuto &&
+        !curPlayer?.isDisconnected &&
+        !curPlayer?.isAi &&
+        !curPlayer?.isBot &&
+        !curPlayer?.isSimulated &&
+        !curPlayer?.id?.startsWith('BOT-') &&
+        !curPlayer?.id?.startsWith('sim-') &&
+        !curPlayer?.id?.startsWith('P-sim-')
+      );
+      // 关键优化：掉线或纯AI 1200ms 快速出牌；在线托管玩家留出 2600ms 避免与客户端 1300ms 自动出牌竞态撞车；未托管真人 60000ms
+      const timeoutThreshold = isConnectedManualAuto ? 2600 : (isPlayerAuto ? 1200 : 60000);
 
       if (room.lastTurnTs && now - room.lastTurnTs > timeoutThreshold) {
         room.lastTurnTs = now;
 
-        // 首次超时，自动为玩家打上托管标签，确保后续每一轮都进入 1.2s 快速出牌节奏，绝不卡顿等待
+        // 首次超时，自动为玩家打上托管标签，确保后续每一轮都进入快速出牌节奏，绝不卡顿等待
         if (!isPlayerAuto) {
           if (curPlayer) curPlayer.isAutoManaged = true;
           if (!room.boardState.autoManagedSeats) room.boardState.autoManagedSeats = {};
@@ -2472,6 +2621,8 @@ setInterval(() => {
             hand.push(drawnTile);
             if (!room.boardState.extraState) room.boardState.extraState = {};
             room.boardState.extraState.wallRemaining = wall.length;
+            room.boardState.extraState.lastDrawnSeat = currentSeat;
+            room.boardState.extraState.lastDrawnTile = drawnTile;
             if (room.boardState.handsCount) room.boardState.handsCount[currentSeat] = hand.length;
 
             broadcast({
@@ -2500,14 +2651,16 @@ setInterval(() => {
               boardState: room.boardState,
             });
 
-            // 摸牌后检查是否胡牌 (四红中直接天胡 或 自摸和牌)
+            // 摸牌后检查是否胡牌 (四红中直接天胡 或 自摸和牌，严格校验总张数===14)
             const redDragonCount = isHongzhongMode
               ? hand.filter((t: any) => t.type === 'zi' && (t.value === 5 || t.text === '红中' || t.isRedDragon)).length
               : 0;
-            const isFourHz = redDragonCount >= 4;
-            const winRes = checkMahjongWin(hand as any, isHongzhongMode);
+            const isFourHz = isHongzhongMode && redDragonCount >= 4;
+            const winRes = (hand.length % 3 === 2 && hand.length + melds.length * 3 === 14)
+              ? checkMahjongWin(hand as any, isHongzhongMode)
+              : { win: false, desc: '', fan: 0 };
 
-            if (isFourHz || winRes.win) {
+            if ((hand.length + melds.length * 3 === 14) && (isFourHz || winRes.win)) {
               executeMahjongWinSettlement(room, currentSeat, isFourHz, { tile: drawnTile });
               continue;
             }

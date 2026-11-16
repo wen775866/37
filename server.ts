@@ -138,6 +138,68 @@ function executeMahjongWinSettlement(room: any, winnerSeat: number, isFourHz: bo
   }
 }
 
+function executeMahjongDrawStalemate(room: any, triggerSeat: number, reasonMsg = '牌墙抓毕，本局荒庄（流局）！') {
+  if (!room || !room.boardState) return;
+  if (room.boardState.phase === 'ended') return;
+
+  const bs = room.boardState;
+  bs.phase = 'ended';
+  bs.isDraw = true;
+  if (!bs.extraState) bs.extraState = {};
+  bs.extraState.wallRemaining = 0;
+  bs.extraState.pendingPengSeat = null;
+  room.status = 'finished';
+  room.moveCount = (room.moveCount || 0) + 1;
+  bs.actionSeq = (bs.actionSeq || 0) + 1;
+  bs.moveCount = room.moveCount;
+  bs.updatedAt = Date.now();
+
+  const targetSceneRoom = sceneWaitingRooms.get(room.id);
+  if (targetSceneRoom) {
+    targetSceneRoom.status = 'finished';
+    targetSceneRoom.players.forEach((pl: any) => {
+      pl.isReady = false;
+    });
+    const disconnectedList = targetSceneRoom.players.filter((pl: any) => pl.isDisconnected);
+    if (disconnectedList.length > 0) {
+      targetSceneRoom.players = targetSceneRoom.players.filter((pl: any) => !pl.isDisconnected);
+      targetSceneRoom.players.forEach((pl: any, idx: number) => {
+        pl.seat = idx;
+        pl.isReady = false;
+      });
+      targetSceneRoom.status = 'waiting';
+    }
+    broadcast({
+      type: 'scene_room_update',
+      roomId: targetSceneRoom.id,
+      gameType: targetSceneRoom.gameType,
+      sceneMode: targetSceneRoom.sceneMode,
+      players: targetSceneRoom.players,
+      maxPlayers: targetSceneRoom.maxPlayers,
+      status: targetSceneRoom.status,
+    });
+  }
+
+  const stalematePayload = {
+    action: 'draw_stalemate',
+    isDraw: true,
+    reason: 'wall_exhausted',
+    message: reasonMsg,
+    msg: reasonMsg,
+  };
+
+  broadcast({
+    type: 'game_event',
+    roomId: room.id,
+    seat: triggerSeat,
+    event: stalematePayload,
+    payload: stalematePayload,
+    moveCount: room.moveCount,
+    boardState: bs,
+  });
+}
+
+
 // Auto-detect and load .env from project directory, parent directory (~/.env), or HOME
 const possibleEnvPaths = [
   path.resolve(process.cwd(), '.env'),
@@ -1628,7 +1690,7 @@ wss.on('connection', (ws) => {
           }
           const bs = room.boardState;
 
-          const mutatingActions = new Set(['play', 'pass', 'draw', 'discard', 'peng', 'gang', 'hu', 'finish']);
+          const mutatingActions = new Set(['play', 'pass', 'draw', 'discard', 'peng', 'gang', 'hu', 'draw_stalemate', 'finish']);
           if (bs.phase === 'ended' && mutatingActions.has(action)) {
             return;
           }
@@ -1725,6 +1787,10 @@ wss.on('connection', (ws) => {
               bs.extraState.pendingPengSeat = null;
               bs.extraState.lastDrawnSeat = null;
               bs.extraState.lastDrawnTile = null;
+              if (Array.isArray((room as any).deal?.remainingWall)) {
+                bs.extraState.wallRemaining = (room as any).deal.remainingWall.length;
+              }
+              p.wallRemaining = bs.extraState.wallRemaining;
               room.moveCount = (room.moveCount || 0) + 1;
               bs.actionSeq = (bs.actionSeq || 0) + 1;
               bs.moveCount = room.moveCount;
@@ -1750,43 +1816,7 @@ wss.on('connection', (ws) => {
               }
               const wallArr = (room as any).deal?.remainingWall;
               if (!Array.isArray(wallArr) || wallArr.length === 0) {
-                bs.phase = 'ended';
-                bs.isDraw = true;
-                room.status = 'finished';
-                const targetSceneRoom = sceneWaitingRooms.get(room.id);
-                if (targetSceneRoom) {
-                  targetSceneRoom.status = 'finished';
-                  targetSceneRoom.players.forEach((pl: any) => {
-                    pl.isReady = false;
-                  });
-                  broadcast({
-                    type: 'scene_room_update',
-                    roomId: targetSceneRoom.id,
-                    gameType: targetSceneRoom.gameType,
-                    sceneMode: targetSceneRoom.sceneMode,
-                    players: targetSceneRoom.players,
-                    maxPlayers: targetSceneRoom.maxPlayers,
-                    status: targetSceneRoom.status,
-                  });
-                }
-                broadcast({
-                  type: 'game_event',
-                  roomId: room.id,
-                  seat,
-                  event: {
-                    action: 'draw_stalemate',
-                    isDraw: true,
-                    reason: 'wall_exhausted',
-                    message: '牌墙抓毕，本局荒庄（流局）！',
-                  },
-                  payload: {
-                    action: 'draw_stalemate',
-                    isDraw: true,
-                    reason: 'wall_exhausted',
-                    message: '牌墙抓毕，本局荒庄（流局）！',
-                  },
-                  boardState: bs,
-                });
+                executeMahjongDrawStalemate(room, seat, '牌墙抓毕，本局荒庄（流局）！');
                 return;
               }
               const drawn = wallArr.shift();
@@ -1933,6 +1963,13 @@ wss.on('connection', (ws) => {
                 resolvedGangType = hasMatchingPeng ? 'bu' : 'an';
               }
               p.gangType = resolvedGangType;
+
+              const wallForGang = (room as any).deal?.remainingWall;
+              if (!Array.isArray(wallForGang) || wallForGang.length === 0) {
+                console.warn(`🛡️ [服务端拦截无牌杠牌] 席位 ${seat} 尝试${resolvedGangType}杠，但牌墙已空无牌可补`);
+                sendMahjongReject('claim_rejected', 'wall_empty_no_gang', { claimType: 'gang', gangType: resolvedGangType, tile });
+                return;
+              }
 
               if (resolvedGangType === 'ming') {
                 if (
@@ -2165,6 +2202,15 @@ wss.on('connection', (ws) => {
               bs.moveCount = room.moveCount;
               bs.updatedAt = Date.now();
               executeMahjongWinSettlement(room, seat, isFourHzAuth, p);
+              return;
+            } else if (action === 'draw_stalemate') {
+              const wallArr = (room as any).deal?.remainingWall;
+              if (Array.isArray(wallArr) && wallArr.length > 0) {
+                console.warn(`🛡️ [服务端拦截误报流局] 席位 ${seat} 上报流局，但权威牌墙仍余 ${wallArr.length} 张`);
+                sendMahjongReject('draw_rejected', 'wall_not_empty');
+                return;
+              }
+              executeMahjongDrawStalemate(room, seat, '牌墙抓毕，本局荒庄（流局）！');
               return;
             }
           } else {
@@ -2549,14 +2595,20 @@ setInterval(() => {
         !curPlayer?.id?.startsWith('sim-') &&
         !curPlayer?.id?.startsWith('P-sim-')
       );
-      // 关键优化：掉线或纯AI 1200ms 快速出牌；在线托管玩家留出 2600ms 避免与客户端 1300ms 自动出牌竞态撞车；未托管真人 60000ms
-      const timeoutThreshold = isConnectedManualAuto ? 2600 : (isPlayerAuto ? 1200 : 60000);
+      const mjDealForThreshold = (room as any).deal;
+      const mjWallEmptyPendingDraw = room.gameType === 'mahjong' &&
+        Array.isArray(mjDealForThreshold?.remainingWall) &&
+        mjDealForThreshold.remainingWall.length === 0 &&
+        !room.boardState.extraState?.pendingPengSeat;
+      // 关键优化：掉线或纯AI 1200ms 快速出牌；在线托管玩家留出 2600ms 避免与客户端 1300ms 自动出牌竞态撞车；牌墙已空时缩短兜底等待为 3500ms 及时流局；未托管真人 60000ms
+      const baseTimeoutThreshold = isConnectedManualAuto ? 2600 : (isPlayerAuto ? 1200 : 60000);
+      const timeoutThreshold = mjWallEmptyPendingDraw ? Math.min(baseTimeoutThreshold, 3500) : baseTimeoutThreshold;
 
       if (room.lastTurnTs && now - room.lastTurnTs > timeoutThreshold) {
         room.lastTurnTs = now;
 
         // 首次超时，自动为玩家打上托管标签，确保后续每一轮都进入快速出牌节奏，绝不卡顿等待
-        if (!isPlayerAuto) {
+        if (!isPlayerAuto && !mjWallEmptyPendingDraw) {
           if (curPlayer) curPlayer.isAutoManaged = true;
           if (!room.boardState.autoManagedSeats) room.boardState.autoManagedSeats = {};
           room.boardState.autoManagedSeats[currentSeat] = true;
@@ -2593,26 +2645,7 @@ setInterval(() => {
           if (totalTiles % 3 === 1) {
             // 牌墙已空，判定荒庄 / 流局
             if (wall.length === 0) {
-              room.boardState.phase = 'ended';
-              room.boardState.isDraw = true;
-              broadcast({
-                type: 'game_event',
-                roomId: room.id,
-                seat: currentSeat,
-                event: {
-                  action: 'draw_stalemate',
-                  isDraw: true,
-                  reason: 'wall_exhausted',
-                  msg: '牌墙已摸空，荒牌流局！',
-                },
-                payload: {
-                  action: 'draw_stalemate',
-                  isDraw: true,
-                  reason: 'wall_exhausted',
-                  msg: '牌墙已摸空，荒牌流局！',
-                },
-                boardState: room.boardState,
-              });
+              executeMahjongDrawStalemate(room, currentSeat, '牌墙已摸空，荒牌流局！');
               continue;
             }
 

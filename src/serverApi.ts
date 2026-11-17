@@ -16,6 +16,16 @@ import type { ServerBookingCarriage, ServerBookingTable } from './games/shisansh
 
 const BOOKING_FILE = path.resolve(process.cwd(), 'data', 'booking_carriages.json');
 
+let bookingCarriageLockChain: Promise<void> = Promise.resolve();
+export function withBookingCarriagesLock<T>(fn: () => Promise<T> | T): Promise<T> {
+  const run = bookingCarriageLockChain.then(() => fn());
+  bookingCarriageLockChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
 export function loadBookingCarriagesFromDisk(): Record<string, ServerBookingCarriage> {
   try {
     if (fs.existsSync(BOOKING_FILE)) {
@@ -2056,7 +2066,7 @@ export async function handleApiRoute(
     try {
       const sceneMode = (urlObj.searchParams.get('sceneMode') === 'eight-booking') ? 'eight-booking' : 'four-booking';
       const carriageNumber = parseInt(urlObj.searchParams.get('carriageNumber') || '1', 10);
-      const carriage = getOrInitServerCarriage(sceneMode, carriageNumber);
+      const carriage = await withBookingCarriagesLock(() => getOrInitServerCarriage(sceneMode, carriageNumber));
       sendJson(res, 200, { success: true, carriage });
       return true;
     } catch (err: any) {
@@ -2070,13 +2080,17 @@ export async function handleApiRoute(
       const payload = await parseJsonBody(req);
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
       const carriageNum = Number(payload.carriageNumber) || 1;
-      const carriages = loadBookingCarriagesFromDisk();
-      const key = `${sceneMode}_car_${carriageNum}`;
-      const carriage = carriages[key] || initServerCarriageTables(carriageNum, sceneMode);
-
       const tIdx = Number(payload.tableIndex) || 1;
-      const table = carriage.tables?.find((t) => t.tableIndex === tIdx);
-      if (table) {
+
+      const result = await withBookingCarriagesLock(() => {
+        const carriages = loadBookingCarriagesFromDisk();
+        const key = `${sceneMode}_car_${carriageNum}`;
+        const carriage = carriages[key] || initServerCarriageTables(carriageNum, sceneMode);
+
+        const table = carriage.tables?.find((t) => t.tableIndex === tIdx);
+        if (!table) {
+          return { notFound: true as const };
+        }
         table.isSubmitted = true;
         table.playerSeat = payload.playerSeat || carriage.selectedSeat || '东';
         table.playerId = payload.playerId;
@@ -2093,11 +2107,14 @@ export async function handleApiRoute(
 
         carriages[key] = carriage;
         saveBookingCarriagesToDisk(carriages);
+        return { notFound: false as const, carriage, submittedTable: table };
+      });
 
-        sendJson(res, 200, { success: true, carriage, submittedTable: table });
+      if (result.notFound) {
+        sendJson(res, 404, { success: false, error: 'table_not_found' });
         return true;
       }
-      sendJson(res, 404, { success: false, error: 'table_not_found' });
+      sendJson(res, 200, { success: true, carriage: result.carriage, submittedTable: result.submittedTable });
       return true;
     } catch (err: any) {
       sendJson(res, 400, { success: false, error: String(err?.message || err) });

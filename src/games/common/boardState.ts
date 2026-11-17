@@ -22,6 +22,7 @@ export function createDefaultBoardState(roomId: string, gameType: string): Autho
     lastCombo: null,
     winnerSeat: null,
     discardsHistory: [],
+    seatKongScores: gType === 'mahjong' ? [0, 0, 0, 0] : undefined,
     extraState: gType === 'mahjong'
       ? { mahjongDiscards: [], mahjongMelds: [[], [], [], []], lastDiscarded: null, wallRemaining: 83 }
       : (gType === 'yansan' ? { playedCardsHistory: [], consecutivePasses: 0 } : { shisanshuiSubmissions: {} }),

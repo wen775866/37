@@ -34,6 +34,10 @@ export interface AuthoritativeBoardState {
   wallRemaining?: number;
   discardsHistory?: ServerComboDTO[];
   finishedSeats?: number[];
+  seatKongScores?: number[];
+  autoManagedSeats?: Record<number, boolean>;
+  isDraw?: boolean;
+  winDesc?: string;
   allianceScoreResult?: any;
   settlement?: any;
   extraState?: Record<string, any>;

@@ -973,6 +973,11 @@ function resetAutoHostState() {
 // Claim Window (碰 / 杠思考窗口，时长 10 秒，支持点击【过】提前跳过)
 const isClaiming = ref(false);
 const claimCountdown = ref(10);
+const isWaitingServerClaimWindow = ref(false);
+let isOnlineDrawPending = false;
+let isOnlineGangPending = false;
+let isOnlineHuPending = false;
+let pendingOnlineGangBackup: { playerKongExtra: number[]; seatKongScores: number[]; kongRecords: string[] } | null = null;
 let claimInterval: any = null;
 let claimWaitTimer: any = null;
 let pendingClaimNext: (() => void) | null = null;
@@ -996,6 +1001,11 @@ function cleanAllGameTimers() {
   resetAutoHostState();
   cleanDealingTimers();
   pendingPengTurn.value = null;
+  isWaitingServerClaimWindow.value = false;
+  isOnlineDrawPending = false;
+  isOnlineGangPending = false;
+  isOnlineHuPending = false;
+  pendingOnlineGangBackup = null;
   lastOptimisticDrawId = null;
   lastOptimisticSuppTileId = null;
   lastDrawnTileIdByRelSeat.fill(null);
@@ -1014,9 +1024,15 @@ function cleanAllGameTimers() {
 
 function handlePassClaim() {
   soundFX.playTap();
-  sendGameMove('pass', { absSeat: mySeat.value });
+  const dId = lastDiscarded.value?.id;
+  sendGameMove('pass', { absSeat: mySeat.value, discardId: dId });
   const next = pendingClaimNext;
   stopClaimCountdown();
+  if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+    tipMessage.value = '🀄 已选择过牌，等待牌桌流转...';
+    drawTable();
+    return;
+  }
   if (next) {
     next();
   }
@@ -1117,6 +1133,10 @@ function waitForPlayerClaim(next: () => void) {
     claimWaitTimer = setTimeout(() => {
       claimWaitTimer = null;
       if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing' || !lastDiscarded.value || pendingPengTurn.value !== null) return;
+      if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+        sendGameMove('pass', { absSeat: mySeat.value, discardId: lastDiscarded.value?.id });
+        return;
+      }
       next();
     }, 550);
     return;
@@ -1136,17 +1156,20 @@ function waitForPlayerClaim(next: () => void) {
       claimCountdown.value--;
       if (claimCountdown.value <= 0) {
         // 10秒超时自动过
+        if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+          handlePassClaim();
+          return;
+        }
         const cb = pendingClaimNext;
         stopClaimCountdown();
         if (cb && !hasWon.value && !showSettlement.value && dealingPhase.value === 'playing') cb();
       }
     }, 1000);
   } else {
-    // 🛡️ 在联机对局中，如果本家是下家，给其它席位留足1200ms碰杠决策窗口，
-    // 避免本家在550ms内过快摸牌造成与其它玩家碰牌发生并发竞态
-    const discRel = lastDiscarded.value?.discardBy ?? 0;
-    const isNextSelf = ((discRel + 1) % 4) === 0;
-    const waitDelay = (!props.isPracticeMode && props.ws && isNextSelf) ? 1200 : 550;
+    if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+      return;
+    }
+    const waitDelay = 550;
     claimWaitTimer = setTimeout(() => {
       claimWaitTimer = null;
       if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing' || !lastDiscarded.value || pendingPengTurn.value !== null) return;
@@ -1451,9 +1474,11 @@ function findSmartBestDiscard(hand: MahjongTile[]): number {
 function checkAutoHostTurn() {
   stopTurnCountdown();
   if (!isAutoHost.value || turnPlayer.value !== 0 || hasWon.value || isDrawStalemate.value) return;
+  if (isOnlineDrawPending || isOnlineGangPending || isOnlineHuPending || isWaitingServerClaimWindow.value) return;
   if (autoHostTimer) clearTimeout(autoHostTimer);
   autoHostTimer = setTimeout(() => {
     if (!isAutoHost.value || turnPlayer.value !== 0 || hasWon.value || isDrawStalemate.value) return;
+    if (isOnlineDrawPending || isOnlineGangPending || isOnlineHuPending || isWaitingServerClaimWindow.value) return;
     if (canHu.value) {
       handleHu();
       return;
@@ -1765,6 +1790,11 @@ function handleReconnectSync(msg: any) {
   isRollingDice.value = false;
   dealingPhase.value = 'playing';
   handFlipProgress.value = 1;
+  isWaitingServerClaimWindow.value = false;
+  isOnlineDrawPending = false;
+  isOnlineGangPending = false;
+  isOnlineHuPending = false;
+  pendingOnlineGangBackup = null;
   lastOptimisticDrawId = null;
   lastOptimisticSuppTileId = null;
   lastDrawnTileIdByRelSeat.fill(null);
@@ -1911,6 +1941,16 @@ function handleReconnectSync(msg: any) {
     return;
   }
 
+  if (bs?.phase === 'ended' && bs?.winnerSeat !== null && bs?.winnerSeat !== undefined && bs?.settlement) {
+    triggerMahjongWin(absToRelSeat(bs.winnerSeat), Boolean(bs.settlement.isFourHongzhong), {
+      ...bs.settlement,
+      winningHand: bs.settlement.winningHand,
+      winningMelds: bs.settlement.winningMelds,
+      fromServerWs: true,
+    });
+    return;
+  }
+
   tipMessage.value = turnPlayer.value === 0 ? '🔄 牌桌状态已同步！轮到您出牌' : `🔄 牌桌状态已同步！当前轮到【${SEAT_NAMES[turnPlayer.value]}】出牌`;
   if (turnPlayer.value === 0 && !isClaiming.value) {
     startTurnCountdown();
@@ -1923,6 +1963,8 @@ function dealNewMatch(designatedDealer?: number, forceReApply = false, dealOverr
   hasClickedReady.value = false;
   lastOptimisticDrawId = null;
   lastOptimisticSuppTileId = null;
+  isOnlineHuPending = false;
+  pendingOnlineGangBackup = null;
   lastDrawnTileIdByRelSeat.fill(null);
   resetAutoHostState();
   const currentDeal = dealOverride || props.initialDeal;
@@ -2153,7 +2195,7 @@ function finishDealingAndStartPlay() {
     if (myHand.value.filter(isHongzhong).length === 4) {
       const t = setTimeout(() => {
         if (hasWon.value || showSettlement.value || dealingPhase.value === 'settled') return;
-        triggerMahjongWin(0, true);
+        submitOrTriggerMyHu(true);
       }, 350);
       dealingAnimTimers.push(t);
       return;
@@ -2217,7 +2259,7 @@ function skipDealingAnimation() {
     if (myHand.value.filter(isHongzhong).length === 4) {
       const t = setTimeout(() => {
         if (hasWon.value || showSettlement.value || dealingPhase.value === 'settled') return;
-        triggerMahjongWin(0, true);
+        submitOrTriggerMyHu(true);
       }, 350);
       dealingAnimTimers.push(t);
       return;
@@ -2279,7 +2321,8 @@ const canPeng = computed(() => {
 // 规则：可以杠 (支持明杠、暗杠、补杠；红中模式下四红中直接胡牌结算)
 const canGang = computed(() => {
   if (hasWon.value || showSettlement.value || isDrawStalemate.value || dealingPhase.value !== 'playing') return false;
-  if (wallPool.length <= 0 || wallCount.value <= 0) return false;
+  const hasWallTiles = isOnlineMultiplayerRoom.value ? wallCount.value > 0 : (wallPool.length > 0 && wallCount.value > 0);
+  if (!hasWallTiles) return false;
   // 1. 明杠：他人出牌且本家未摸牌时，手中已有3张相同牌
   if (myHand.value.length % 3 === 1 && lastDiscarded.value && lastDiscarded.value.discardBy !== 0) {
     const d = lastDiscarded.value;
@@ -2580,7 +2623,8 @@ function checkHongzhongWin(hand: MahjongTile[]): boolean {
 // 规则：不可炮胡，仅限自摸 (必须轮到自己回合且已抓牌在手，手牌数为 3k+2)
 const canHu = computed(() => {
   if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return false;
-  if (turnPlayer.value !== 0 || myHand.value.length % 3 !== 2) return false;
+  const totalCount = myHand.value.length + meldedTiles.value.length * 3;
+  if (turnPlayer.value !== 0 || myHand.value.length % 3 !== 2 || totalCount !== 14) return false;
   if (isHongzhongMode.value) {
     return checkHongzhongWin(myHand.value);
   }
@@ -3675,12 +3719,19 @@ function handleDraw() {
   if (hasWon.value || showSettlement.value || isDrawStalemate.value || dealingPhase.value !== 'playing') return;
   if (myHand.value.length % 3 !== 1) return;
   turnPlayer.value = 0;
-  if (wallPool.length === 0 || (isOnlineMultiplayerRoom.value && wallCount.value <= 0)) {
-    if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN && wallPool.length > 0) {
-      // 本地牌墙计数因网络偏差残留时，交由服务端权威摸牌校验并广播荒庄流局
+  if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+    if (wallCount.value <= 0) {
       sendGameMove('draw', { absSeat: mySeat.value, wallRemaining: 0 });
       return;
     }
+    if (isOnlineDrawPending) return;
+    isOnlineDrawPending = true;
+    tipMessage.value = '🀄 正在从牌墙抓牌...';
+    drawTable();
+    sendGameMove('draw', { absSeat: mySeat.value });
+    return;
+  }
+  if (wallPool.length === 0) {
     triggerDrawStalemate('牌墙已摸空，荒牌流局！', !isOnlineMultiplayerRoom.value);
     return;
   }
@@ -3698,7 +3749,7 @@ function handleDraw() {
   // 特殊规则：摸到四张红中直接结束游戏！
   if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
     drawTable();
-    triggerMahjongWin(0, true);
+    submitOrTriggerMyHu(true);
     return;
   }
 
@@ -3775,7 +3826,8 @@ function handlePeng() {
 
 // 规则：可以杠 (明杠、暗杠、补杠，杠后从牌墙末尾补一张牌入座)
 function handleGang() {
-  if (!canGang.value || wallPool.length <= 0 || wallCount.value <= 0) return;
+  const hasWallTiles = isOnlineMultiplayerRoom.value ? wallCount.value > 0 : (wallPool.length > 0 && wallCount.value > 0);
+  if (!canGang.value || !hasWallTiles) return;
   stopClaimCountdown();
   isClaiming.value = false;
   if (botTimer) clearTimeout(botTimer);
@@ -3851,6 +3903,14 @@ function handleGang() {
   haptics.sealStamp();
   soundFX.speakAction('gang');
 
+  if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+    pendingOnlineGangBackup = {
+      playerKongExtra: [...playerKongExtra.value],
+      seatKongScores: [...seatKongScores.value],
+      kongRecords: [...kongRecords.value],
+    };
+  }
+
   const isAnOrBuGang = resolvedGangType === 'an' || resolvedGangType === 'bu';
   if (kongedOpponentSeat !== null && kongedOpponentSeat > 0 && kongedOpponentSeat <= 3) {
     playerKongExtra.value[kongedOpponentSeat - 1] += 10;
@@ -3867,7 +3927,25 @@ function handleGang() {
     kongRecords.value.push(resolvedGangType === 'an' ? '您暗杠各得三家10分 (+30分，三家各多输10分)' : '您补杠各得三家10分 (+30分，三家各多输10分)');
   }
 
-  // 杠后从牌墙末尾补一张牌入座 (杠上自摸机会)
+  if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+    isOnlineGangPending = true;
+    lastOptimisticSuppTileId = null;
+    selectedIndex.value = null;
+    tipMessage.value = '杠牌成功，正在从牌墙补抓暗张...';
+    drawTable();
+    sendGameMove('gang', {
+      absSeat: mySeat.value,
+      tile: gangTile,
+      targetDiscardId: resolvedGangType === 'ming' ? gangTile.id : undefined,
+      isMingGang: resolvedGangType === 'ming',
+      gangType: resolvedGangType,
+      fromSeat: kongedOpponentSeat !== null ? relToAbsSeat(kongedOpponentSeat) : undefined,
+    });
+    saveLocalSnapshot();
+    return;
+  }
+
+  // 杠后从牌墙末尾补一张牌入座 (单机/试玩本地发牌)
   let suppTile: MahjongTile | null = null;
   if (wallPool.length > 0) {
     suppTile = wallPool.pop()!;
@@ -3897,7 +3975,7 @@ function handleGang() {
 
   // 杠后摸到第4张红中直接胡牌结束游戏！
   if (suppTile && isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
-    triggerMahjongWin(0, true);
+    submitOrTriggerMyHu(true);
     return;
   }
 
@@ -3908,11 +3986,39 @@ function handleGang() {
   }
 }
 
+function submitOrTriggerMyHu(isFourHz: boolean) {
+  if (hasWon.value || showSettlement.value || isDrawStalemate.value || dealingPhase.value === 'settled') return;
+  if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+    if (isOnlineHuPending) return;
+    isOnlineHuPending = true;
+    stopTurnCountdown();
+    stopClaimCountdown();
+    if (autoHostTimer) {
+      clearTimeout(autoHostTimer);
+      autoHostTimer = null;
+    }
+    tipMessage.value = isFourHz
+      ? '🀄 摸齐四张红中，正在核验权威抓码结算...'
+      : '🀄 正在核验自摸和牌并开启权威奖码...';
+    drawTable();
+    sendGameMove('hu', {
+      winner: mySeat.value,
+      isFourHz,
+      winningHand: myHand.value,
+      winningMelds: meldedTiles.value,
+      seatKongScores: seatKongScores.value,
+      absSeat: mySeat.value,
+    });
+    return;
+  }
+  triggerMahjongWin(0, isFourHz);
+}
+
 // 规则：仅自摸胡牌 (不可炮胡)，调用统一结算函数
 function handleHu() {
   if (!canHu.value || hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
   const isFourHz = isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4;
-  triggerMahjongWin(0, isFourHz);
+  submitOrTriggerMyHu(isFourHz);
 }
 
 let botTimer: any = null;
@@ -4265,7 +4371,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     if (!tile) return;
 
     const oppHand = oppHands.value[botIdx] || [];
-    const tileIdx = oppHand.findIndex((c) => c.type === tile.type && c.value === tile.value);
+    const tileIdx = oppHand.findIndex((c: any) => !c.hidden && c.type === tile.type && c.value === tile.value);
     if (tileIdx !== -1) {
       oppHand.splice(tileIdx, 1);
     } else if (oppHand.length > 0) {
@@ -4286,6 +4392,17 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     tipMessage.value = `🀄 【${SEAT_NAMES[relSeat]}】 打出了【${tile.text}】`;
     drawTable();
     saveLocalSnapshot();
+
+    if (isOnlineMultiplayerRoom.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+      isWaitingServerClaimWindow.value = Boolean(evt.hasClaimWindow);
+      if (evt.hasClaimWindow && (canPeng.value || canGang.value)) {
+        waitForPlayerClaim(() => handlePassClaim());
+      } else if (evt.hasClaimWindow) {
+        tipMessage.value = '🀄 等待其他牌友确认碰/杠...';
+        drawTable();
+      }
+      return;
+    }
 
     waitForPlayerClaim(() => {
       passTurnToNext(relSeat);
@@ -4331,10 +4448,11 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
 
     const tile = evt.tile || lastDiscarded.value;
     const oppHand = oppHands.value[botIdx] || [];
+    const serverMeld = Array.isArray(evt.meldTiles) && evt.meldTiles.length === 3 ? evt.meldTiles : null;
     if (tile) {
       const removedTiles: MahjongTile[] = [];
-      const filtered = oppHand.filter((c) => {
-        if (removedTiles.length < 2 && c.type === tile.type && c.value === tile.value) {
+      const filtered = oppHand.filter((c: any) => {
+        if (removedTiles.length < 2 && !c.hidden && c.type === tile.type && c.value === tile.value) {
           removedTiles.push(c);
           return false;
         }
@@ -4345,7 +4463,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
         removedTiles.push(tile);
       }
       oppHands.value[botIdx] = filtered;
-      oppMelds.value[botIdx].push(removedTiles.length === 2 ? [...removedTiles, tile] : [tile, tile, tile]);
+      oppMelds.value[botIdx].push(serverMeld || (removedTiles.length === 2 ? [...removedTiles, tile] : [tile, tile, tile]));
       const dIdx = discards.value.findIndex((c) => c.id === tile.id);
       if (dIdx >= 0) {
         discards.value.splice(dIdx, 1);
@@ -4356,6 +4474,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     }
     stopClaimCountdown();
     isClaiming.value = false;
+    isWaitingServerClaimWindow.value = false;
     pendingPengTurn.value = relSeat;
     turnPlayer.value = relSeat;
     if (typeof evt.wallRemaining === 'number') {
@@ -4422,6 +4541,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
     }
     stopClaimCountdown();
     isClaiming.value = false;
+    isWaitingServerClaimWindow.value = false;
     pendingPengTurn.value = relSeat;
 
     const fromRelSeat = evt.fromSeat !== undefined
@@ -4429,11 +4549,12 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
       : (lastDiscarded.value?.discardBy ?? 0);
 
     const oppHand = oppHands.value[botIdx] || [];
+    const serverGangMeld = Array.isArray(evt.meldTiles) && evt.meldTiles.length === 4 ? evt.meldTiles : null;
     if (tile) {
       const removeNeed = gType === 'bu' ? 1 : (gType === 'an' ? 4 : 3);
       const removedTiles: MahjongTile[] = [];
-      const filtered = oppHand.filter((c) => {
-        if (removedTiles.length < removeNeed && c.type === tile.type && c.value === tile.value) {
+      const filtered = oppHand.filter((c: any) => {
+        if (removedTiles.length < removeNeed && !c.hidden && c.type === tile.type && c.value === tile.value) {
           removedTiles.push(c);
           return false;
         }
@@ -4448,14 +4569,18 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
       if (gType === 'bu') {
         const existingPeng = oppMeldsList.find((m) => m.length === 3 && m[0].type === tile.type && m[0].value === tile.value);
         if (existingPeng) {
-          existingPeng.push(removedTiles[0] || tile);
+          if (serverGangMeld) {
+            existingPeng.splice(0, existingPeng.length, ...serverGangMeld);
+          } else {
+            existingPeng.push(removedTiles[0] || tile);
+          }
         } else {
-          oppMelds.value[botIdx].push([tile, tile, tile, tile]);
+          oppMelds.value[botIdx].push(serverGangMeld || [tile, tile, tile, tile]);
         }
       } else if (gType === 'an') {
-        oppMelds.value[botIdx].push(removedTiles.length === 4 ? removedTiles : [tile, tile, tile, tile]);
+        oppMelds.value[botIdx].push(serverGangMeld || (removedTiles.length === 4 ? removedTiles : [tile, tile, tile, tile]));
       } else {
-        oppMelds.value[botIdx].push(removedTiles.length === 3 ? [...removedTiles, tile] : [tile, tile, tile, tile]);
+        oppMelds.value[botIdx].push(serverGangMeld || (removedTiles.length === 3 ? [...removedTiles, tile] : [tile, tile, tile, tile]));
         if (discards.value.length > 0 && discards.value[discards.value.length - 1].id === tile.id) {
           discards.value.pop();
         } else {
@@ -4605,6 +4730,16 @@ function onWsMessage(ev: MessageEvent) {
       ) {
         const targetAbs = typeof evt.absSeat === 'number' ? evt.absSeat : (typeof evt.seat === 'number' ? evt.seat : -1);
         if (targetAbs === mySeat.value) {
+          isOnlineDrawPending = false;
+          isOnlineGangPending = false;
+          isOnlineHuPending = false;
+          isWaitingServerClaimWindow.value = false;
+          if (evt.action === 'claim_rejected' && pendingOnlineGangBackup) {
+            playerKongExtra.value = [...pendingOnlineGangBackup.playerKongExtra];
+            seatKongScores.value = [...pendingOnlineGangBackup.seatKongScores];
+            kongRecords.value = [...pendingOnlineGangBackup.kongRecords];
+            pendingOnlineGangBackup = null;
+          }
           if (autoHostTimer) {
             clearTimeout(autoHostTimer);
             autoHostTimer = null;
@@ -4705,10 +4840,45 @@ function onWsMessage(ev: MessageEvent) {
         return;
       }
 
+      if (evt.action === 'claim_resolved') {
+        stopClaimCountdown();
+        isClaiming.value = false;
+        isWaitingServerClaimWindow.value = false;
+        if (typeof evt.wallRemaining === 'number') {
+          wallCount.value = evt.wallRemaining;
+        }
+        if (typeof evt.nextTurn === 'number') {
+          turnPlayer.value = absToRelSeat(evt.nextTurn);
+        }
+        if (
+          turnPlayer.value === 0 &&
+          myHand.value.length % 3 === 1 &&
+          !hasWon.value &&
+          !showSettlement.value &&
+          !isDrawStalemate.value &&
+          dealingPhase.value === 'playing'
+        ) {
+          handleDraw();
+        } else if (!hasWon.value && !showSettlement.value && !isDrawStalemate.value) {
+          const nextAbs = relToAbsSeat(turnPlayer.value);
+          if (isSeatDisconnected(nextAbs)) {
+            tipMessage.value = `🤖 【${SEAT_NAMES[turnPlayer.value]}】 离线托管自动出牌中...`;
+          } else if (isSeatAutoManaged(nextAbs)) {
+            tipMessage.value = `⚡ 【${SEAT_NAMES[turnPlayer.value]}】 托管自动出牌中...`;
+          } else {
+            tipMessage.value = `轮到 【${SEAT_NAMES[turnPlayer.value]}】 出牌...`;
+          }
+          startTurnCountdown();
+          drawTable();
+          saveLocalSnapshot();
+        }
+        return;
+      }
+
       const moveCount = typeof msg.moveCount === 'number' ? msg.moveCount : (typeof evt.moveCount === 'number' ? evt.moveCount : -1);
       const moveKey = evt.action === 'set_auto_host'
         ? ''
-        : `${evt.absSeat}_${evt.action}_${evt.tile?.id || evt.tile?.value || ''}_${evt.wallRemaining ?? ''}_${moveCount > 0 ? moveCount : ''}`;
+        : `${evt.absSeat}_${evt.action}_${evt.tile?.id || evt.tile?.value || ''}_${evt.suppTile?.id || ''}_${evt.nextTurn ?? ''}_${evt.wallRemaining ?? ''}_${moveCount > 0 ? moveCount : ''}`;
 
       if (moveKey && moveKey === lastProcessedMoveKey) return;
       if (moveKey) lastProcessedMoveKey = moveKey;
@@ -4745,6 +4915,8 @@ function onWsMessage(ev: MessageEvent) {
         handleRemoteGameEvent(evtAbsSeat, evt);
       } else if (evtAbsSeat === mySeat.value) {
         if (evt.action === 'draw') {
+          isOnlineDrawPending = false;
+          isWaitingServerClaimWindow.value = false;
           stopClaimCountdown();
           if (evt.autoDraw && autoHostTimer) {
             clearTimeout(autoHostTimer);
@@ -4763,7 +4935,7 @@ function onWsMessage(ev: MessageEvent) {
                 tipMessage.value = `摸到了【${evt.tile.text}】${isHongzhong(evt.tile) && isHongzhongMode.value ? '(红中百搭万能)' : ''}，请自摸胡牌或点击出牌`;
                 if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
                   drawTable();
-                  triggerMahjongWin(0, true);
+                  submitOrTriggerMyHu(true);
                   return;
                 }
               }
@@ -4795,6 +4967,12 @@ function onWsMessage(ev: MessageEvent) {
               lastDrawnTileIdByRelSeat[0] = tileToAdd.id || null;
               soundFX.playMahjongClack();
               haptics.mahjongClack();
+              if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
+                drawTable();
+                saveLocalSnapshot();
+                submitOrTriggerMyHu(true);
+                return;
+              }
               tipMessage.value = `摸到了【${tileToAdd.text}】${isHongzhong(tileToAdd) && isHongzhongMode.value ? '(红中百搭万能)' : ''}，请自摸胡牌或点击出牌`;
               drawTable();
               saveLocalSnapshot();
@@ -4806,35 +4984,57 @@ function onWsMessage(ev: MessageEvent) {
             }
           }
         } else if (evt.action === 'peng') {
+          isWaitingServerClaimWindow.value = false;
           if (typeof evt.wallRemaining === 'number') wallCount.value = evt.wallRemaining;
           pendingPengTurn.value = 0;
           turnPlayer.value = 0;
           drawTable();
         } else if (evt.action === 'gang') {
-          if (evt.suppTile && lastOptimisticSuppTileId && evt.suppTile.id !== lastOptimisticSuppTileId) {
-            const optIdx = myHand.value.findIndex((c) => c.id === lastOptimisticSuppTileId);
-            if (optIdx >= 0) {
-              const replaced = myHand.value.splice(optIdx, 1, evt.suppTile)[0];
+          isOnlineGangPending = false;
+          pendingOnlineGangBackup = null;
+          isWaitingServerClaimWindow.value = false;
+          if (Array.isArray(evt.seatKongScores) && evt.seatKongScores.length === 4) {
+            for (let relS = 0; relS < 4; relS++) {
+              seatKongScores.value[relS] = evt.seatKongScores[relToAbsSeat(relS)] || 0;
+            }
+          }
+          if (evt.suppTile) {
+            if (lastOptimisticSuppTileId && evt.suppTile.id !== lastOptimisticSuppTileId) {
+              const optIdx = myHand.value.findIndex((c) => c.id === lastOptimisticSuppTileId);
+              if (optIdx >= 0) {
+                const replaced = myHand.value.splice(optIdx, 1, evt.suppTile)[0];
+                myHand.value = sortHand(myHand.value);
+                if (replaced && !wallPool.some((t) => t.id === replaced.id)) wallPool.push(replaced);
+              }
+            } else if (!lastOptimisticSuppTileId && !myHand.value.some((c) => c.id === evt.suppTile.id)) {
+              myHand.value.push(evt.suppTile);
               myHand.value = sortHand(myHand.value);
-              if (replaced && !wallPool.some((t) => t.id === replaced.id)) wallPool.push(replaced);
               const wIdx = wallPool.findIndex((t) => t.id === evt.suppTile.id);
               if (wIdx >= 0) wallPool.splice(wIdx, 1);
-              tipMessage.value = `杠牌成功！补得【${evt.suppTile.text}】，请自摸胡牌或出牌`;
-              if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
-                lastOptimisticSuppTileId = null;
-                drawTable();
-                triggerMahjongWin(0, true);
-                return;
-              }
+              else if (wallPool.length > 0) wallPool.pop();
             }
+            lastDrawnTileIdByRelSeat[0] = evt.suppTile.id || null;
+            tipMessage.value = `杠牌成功！补得【${evt.suppTile.text}】，请自摸胡牌或出牌`;
           }
           lastOptimisticSuppTileId = null;
           if (typeof evt.wallRemaining === 'number') wallCount.value = evt.wallRemaining;
           pendingPengTurn.value = 0;
           turnPlayer.value = 0;
+          if (isHongzhongMode.value && myHand.value.filter(isHongzhong).length === 4) {
+            drawTable();
+            saveLocalSnapshot();
+            submitOrTriggerMyHu(true);
+            return;
+          }
           drawTable();
           saveLocalSnapshot();
+          if (isAutoHost.value) {
+            checkAutoHostTurn();
+          } else {
+            startTurnCountdown();
+          }
         } else if (evt.action === 'hu') {
+          isOnlineHuPending = false;
           if (!hasWon.value && !showSettlement.value && dealingPhase.value !== 'settled') {
             triggerMahjongWin(0, Boolean(evt.isFourHz), { ...evt, fromServerWs: true });
           }

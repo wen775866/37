@@ -2137,6 +2137,42 @@ function triggerSmoothReconnectBadge() {
 let ws: WebSocket | null = null;
 let pingInterval: any = null;
 let sessionCheckInterval: any = null;
+const serverSettledRooms = new Map<string, { coins: number; delta: number; ts: number }>();
+let lastClientMatchSettleTs = 0;
+
+function findSelfInRoomPlayers(players: any[]): any | undefined {
+  if (!Array.isArray(players)) return undefined;
+  if (myAssignedPlayerId.value) {
+    const exactAssigned = players.find(
+      (p: any) => p && (p.id === myAssignedPlayerId.value || p.originalId === myAssignedPlayerId.value)
+    );
+    if (exactAssigned) return exactAssigned;
+  }
+  if (userProfile.id) {
+    const exactUser = players.find(
+      (p: any) => p && (p.id === userProfile.id || p.originalId === userProfile.id)
+    );
+    if (exactUser) return exactUser;
+  }
+  if (myAssignedPlayerId.value) {
+    const prefixAssigned = players.find(
+      (p: any) => p && typeof p.id === 'string' && (p.id.startsWith(myAssignedPlayerId.value) || myAssignedPlayerId.value.startsWith(p.id))
+    );
+    if (prefixAssigned) return prefixAssigned;
+  }
+  if (userProfile.id) {
+    const prefixUser = players.find(
+      (p: any) => p && typeof p.id === 'string' && (p.id.startsWith(userProfile.id) || userProfile.id.startsWith(p.id))
+    );
+    if (prefixUser) return prefixUser;
+  }
+  if (userProfile.name) {
+    return players.find(
+      (p: any) => p && (p.name === userProfile.name || p.originalName === userProfile.name)
+    );
+  }
+  return undefined;
+}
 
 function addPacketLog(dir: 'IN' | 'OUT', summary: string) {
   const ts = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2328,7 +2364,7 @@ function onChangeSceneFromChatroom() {
         roomId: activeRoomId.value,
         gameType: activeGameType.value,
         sceneMode: activeSceneMode.value,
-        playerId: userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
     } catch {}
@@ -2349,7 +2385,7 @@ function onSelectSceneFromChatroom(gt: string, mode: string) {
           roomId: activeRoomId.value,
           gameType: activeGameType.value,
           sceneMode: activeSceneMode.value,
-          playerId: userProfile.id || 'P-me',
+          playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
           playerName: userProfile.name,
         }));
       } catch {}
@@ -2371,6 +2407,9 @@ function onSelectSceneFromChatroom(gt: string, mode: string) {
 }
 
 function sendSceneJoinOverWs(gt: string, mode: string) {
+  myAssignedPlayerId.value = '';
+  myAssignedSeat.value = null;
+  currentRoomDeal.value = null;
   if (ws && ws.readyState === WebSocket.OPEN) {
     try {
       const maxP = (gt === 'shisanshui' && (mode === 'eight-realtime' || mode === 'eight-booking')) ? 8 : 4;
@@ -2479,7 +2518,7 @@ function onChangeSceneFromWaitingRoom() {
         roomId: activeRoomId.value,
         gameType: activeGameType.value,
         sceneMode: activeSceneMode.value,
-        playerId: userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
     } catch {}
@@ -2645,7 +2684,7 @@ function returnToLobby(forceExit: boolean | any = false) {
         roomId: activeRoomId.value,
         gameType: activeGameType.value,
         sceneMode: activeSceneMode.value,
-        playerId: userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
     } catch {}
@@ -2658,6 +2697,9 @@ function returnToLobby(forceExit: boolean | any = false) {
   activeGameType.value = '';
   activeSceneMode.value = '';
   currentWaitingRoomPlayers.value = [];
+  currentRoomDeal.value = null;
+  myAssignedPlayerId.value = '';
+  myAssignedSeat.value = null;
   notifyPresence('lobby', '');
   saveLocalProfile(userProfile);
   syncAndCheckProfile();
@@ -2699,7 +2741,7 @@ function connectWs() {
       ws.send(JSON.stringify({
         type: 'room_reconnect',
         roomId: activeRoom.value.id,
-        playerId: userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
       addPacketLog('OUT', `RECONNECT_SYNC: ${activeRoom.value.id}`);
@@ -2710,7 +2752,7 @@ function connectWs() {
       ws.send(JSON.stringify({
         type: 'scene_reconnect',
         roomId: targetRoomId,
-        playerId: userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
       addPacketLog('OUT', `SCENE_RECONNECT_AUTO: ${targetRoomId}`);
@@ -2763,6 +2805,13 @@ function connectWs() {
             if (msg.room.gameType === 'mahjong') activeMahjongScene.value = msg.room.sceneMode as any;
           }
           currentWaitingRoomPlayers.value = msg.players || msg.room.players || [];
+          const matchedReconnSelf = findSelfInRoomPlayers(currentWaitingRoomPlayers.value);
+          if (matchedReconnSelf) {
+            myAssignedPlayerId.value = matchedReconnSelf.id;
+            if (typeof matchedReconnSelf.seat === 'number') {
+              myAssignedSeat.value = matchedReconnSelf.seat;
+            }
+          }
           if (msg.deal) {
             currentRoomDeal.value = msg.deal;
           }
@@ -2781,11 +2830,8 @@ function connectWs() {
         if (isPracticeMode.value) return;
         if (Array.isArray(msg.players)) {
           const isMyRoom = Boolean(msg.roomId && activeRoomId.value && msg.roomId === activeRoomId.value);
-          const isMeInPlayers = msg.players.some((p: any) =>
-            (userProfile.id && (p.id === userProfile.id || p.originalId === userProfile.id || (typeof p.id === 'string' && p.id.startsWith(userProfile.id)))) ||
-            (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || p.originalId === myAssignedPlayerId.value || (typeof p.id === 'string' && p.id.startsWith(myAssignedPlayerId.value)))) ||
-            (userProfile.name && p.name === userProfile.name)
-          );
+          const matchedUpdateSelf = findSelfInRoomPlayers(msg.players);
+          const isMeInPlayers = Boolean(matchedUpdateSelf);
           if (!isMyRoom && !isMeInPlayers) return;
           currentWaitingRoomPlayers.value = msg.players;
           if (msg.roomId) activeRoomId.value = msg.roomId;
@@ -2799,14 +2845,10 @@ function connectWs() {
             }
             if (msg.deal) currentRoomDeal.value = msg.deal;
 
-            const matchedSelf = (msg.players || []).find((p: any) =>
-              (userProfile.id && (p.id === userProfile.id || p.originalId === userProfile.id || (typeof p.id === 'string' && p.id.startsWith(userProfile.id)))) ||
-              (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || p.originalId === myAssignedPlayerId.value || (typeof p.id === 'string' && p.id.startsWith(myAssignedPlayerId.value))))
-            );
-            if (matchedSelf) {
-              myAssignedPlayerId.value = matchedSelf.id;
-              if (typeof matchedSelf.seat === 'number') {
-                myAssignedSeat.value = matchedSelf.seat;
+            if (matchedUpdateSelf) {
+              myAssignedPlayerId.value = matchedUpdateSelf.id;
+              if (typeof matchedUpdateSelf.seat === 'number') {
+                myAssignedSeat.value = matchedUpdateSelf.seat;
               }
             }
 
@@ -2838,6 +2880,7 @@ function connectWs() {
                   matchRoom.status = msg.status || 'playing';
                   if (msg.deal) matchRoom.deal = msg.deal;
                   if (msg.players) matchRoom.players = msg.players;
+                  if (msg.boardState !== undefined) matchRoom.boardState = msg.boardState;
                 }
               }
               if (currentView.value !== 'arena') {
@@ -2855,10 +2898,7 @@ function connectWs() {
         if (Array.isArray(msg.players)) currentWaitingRoomPlayers.value = msg.players;
         if (msg.deal) currentRoomDeal.value = msg.deal;
 
-        const matchedAckSelf = (msg.players || []).find((p: any) =>
-          (userProfile.id && (p.id === userProfile.id || p.originalId === userProfile.id || (typeof p.id === 'string' && p.id.startsWith(userProfile.id)))) ||
-          (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || p.originalId === myAssignedPlayerId.value || (typeof p.id === 'string' && p.id.startsWith(myAssignedPlayerId.value))))
-        );
+        const matchedAckSelf = findSelfInRoomPlayers(msg.players || []);
         if (matchedAckSelf) {
           myAssignedPlayerId.value = matchedAckSelf.id;
           if (typeof matchedAckSelf.seat === 'number') {
@@ -2881,11 +2921,8 @@ function connectWs() {
         if (isPracticeMode.value) return;
         const playersArr = msg.players || [];
         const isMyRoom = Boolean(msg.roomId && activeRoomId.value && msg.roomId === activeRoomId.value);
-        const isMeInPlayers = Array.isArray(playersArr) && playersArr.some((p: any) =>
-          (userProfile.id && (p.id === userProfile.id || p.originalId === userProfile.id || (typeof p.id === 'string' && (p.id.startsWith(userProfile.id) || userProfile.id.startsWith(p.id))))) ||
-          (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || p.originalId === myAssignedPlayerId.value || (typeof p.id === 'string' && (p.id.startsWith(myAssignedPlayerId.value) || myAssignedPlayerId.value.startsWith(p.id))))) ||
-          (userProfile.name && (p.name === userProfile.name || (p as any).originalName === userProfile.name || (typeof p.name === 'string' && (p.name.startsWith(userProfile.name) || userProfile.name.startsWith(p.name)))))
-        );
+        const matchedRoomSelf = findSelfInRoomPlayers(playersArr);
+        const isMeInPlayers = Boolean(matchedRoomSelf);
         const isMatchingScene = Boolean(msg.gameType === activeGameType.value && msg.sceneMode === activeSceneMode.value);
         if (!isMyRoom && !isMeInPlayers && (!isMatchingScene || activeRoomId.value)) return;
 
@@ -2901,11 +2938,6 @@ function connectWs() {
         if (msg.players && Array.isArray(msg.players)) currentWaitingRoomPlayers.value = msg.players;
         if (msg.deal) currentRoomDeal.value = msg.deal;
 
-        const matchedRoomSelf = (msg.players || []).find((p: any) =>
-          (userProfile.id && (p.id === userProfile.id || p.originalId === userProfile.id || (typeof p.id === 'string' && (p.id.startsWith(userProfile.id) || userProfile.id.startsWith(p.id))))) ||
-          (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || p.originalId === myAssignedPlayerId.value || (typeof p.id === 'string' && (p.id.startsWith(myAssignedPlayerId.value) || myAssignedPlayerId.value.startsWith(p.id))))) ||
-          (userProfile.name && (p.name === userProfile.name || (p as any).originalName === userProfile.name || (typeof p.name === 'string' && (p.name.startsWith(userProfile.name) || userProfile.name.startsWith(p.name)))))
-        );
         if (matchedRoomSelf) {
           myAssignedPlayerId.value = matchedRoomSelf.id;
           if (typeof matchedRoomSelf.seat === 'number') {
@@ -2940,6 +2972,7 @@ function connectWs() {
               matchRoom.status = msg.status || 'playing';
               if (msg.deal) matchRoom.deal = msg.deal;
               if (msg.players) matchRoom.players = msg.players;
+              if (msg.boardState !== undefined) matchRoom.boardState = msg.boardState;
             }
           }
 
@@ -3001,7 +3034,7 @@ function connectWs() {
       } else if (msg.type === 'user_coins_updated') {
         const cleanUserPhone = String(userProfile.phone || '').trim().replace(/\D/g, '');
         const cleanMsgPhone = String(msg.phone || '').trim().replace(/\D/g, '');
-        const isMatch = (msg.userId && msg.userId === userProfile.id) ||
+        const isMatch = (msg.userId && (msg.userId === userProfile.id || (myAssignedPlayerId.value && msg.userId === myAssignedPlayerId.value))) ||
                         (cleanUserPhone && cleanMsgPhone && cleanUserPhone === cleanMsgPhone) ||
                         (msg.username && msg.username === userProfile.username);
         if (isMatch) {
@@ -3010,14 +3043,24 @@ function connectWs() {
           if (msg.rating) userProfile.rating = msg.rating;
           if (msg.level) userProfile.level = msg.level;
           saveLocalProfile(userProfile);
-          recordPointsTx(
-            delta >= 0 ? 'admin_grant' : 'admin_deduct',
-            `钱庄系统/Bot筹码调配 (${delta >= 0 ? '+' : ''}${delta})`,
-            delta,
-            userProfile.coins
-          );
-          soundFX.playCoinShower();
-          triggerSpeechBubble(`🪙 钱庄筹码已更新为 ${msg.coins.toLocaleString()} 分 (${delta >= 0 ? '+' : ''}${delta})`);
+          if (msg.source === 'match_settlement') {
+            const entry = { coins: msg.coins, delta, ts: Date.now() };
+            if (msg.roomId) serverSettledRooms.set(msg.roomId, entry);
+            serverSettledRooms.set('last', entry);
+            if (serverSettledRooms.size > 25) {
+              const firstKey = serverSettledRooms.keys().next().value;
+              if (firstKey) serverSettledRooms.delete(firstKey);
+            }
+          } else {
+            recordPointsTx(
+              delta >= 0 ? 'admin_grant' : 'admin_deduct',
+              `钱庄系统/Bot筹码调配 (${delta >= 0 ? '+' : ''}${delta})`,
+              delta,
+              userProfile.coins
+            );
+            soundFX.playCoinShower();
+            triggerSpeechBubble(`🪙 钱庄筹码已更新为 ${msg.coins.toLocaleString()} 分 (${delta >= 0 ? '+' : ''}${delta})`);
+          }
         }
       } else if (msg.type === 'all_users_coins_updated') {
         fetchFreshProfile();
@@ -3488,13 +3531,7 @@ function onGameMove(payload: any) {
   const currentRoomIdVal = activeRoomId.value || activeRoom.value?.id;
 
   // 1. 严格过滤非本家出牌广播与内部防回环：避免其他客户端或内部动画回调将远端事件反向广播回 WebSocket 导致死循环
-  const matchedPlayer = currentWaitingRoomPlayers.value.find((p) => {
-    if (!p) return false;
-    if (myAssignedPlayerId.value && (p.id === myAssignedPlayerId.value || (p as any).originalId === myAssignedPlayerId.value)) return true;
-    if (userProfile.id && (p.id === userProfile.id || (p as any).originalId === userProfile.id)) return true;
-    if (userProfile.name && (p.name === userProfile.name || (p as any).originalName === userProfile.name)) return true;
-    return false;
-  });
+  const matchedPlayer = findSelfInRoomPlayers(currentWaitingRoomPlayers.value);
   const selfSeat = myAssignedSeat.value !== null
     ? myAssignedSeat.value
     : (typeof matchedPlayer?.seat === 'number' ? matchedPlayer.seat : 0);
@@ -3565,7 +3602,16 @@ function onGameMove(payload: any) {
       return;
     }
 
-    userProfile.coins = Math.max(0, userProfile.coins + coinsDelta);
+    lastClientMatchSettleTs = Date.now();
+    const srv = (currentRoomIdVal ? serverSettledRooms.get(currentRoomIdVal) : null) || serverSettledRooms.get('last');
+    const hasFreshServerSettle = Boolean(srv && Date.now() - srv.ts < 12000);
+    if (hasFreshServerSettle && srv) {
+      userProfile.coins = srv.coins;
+      if (currentRoomIdVal) serverSettledRooms.delete(currentRoomIdVal);
+      serverSettledRooms.delete('last');
+    } else {
+      userProfile.coins = Math.max(0, userProfile.coins + coinsDelta);
+    }
     userProfile.rating = Math.max(1000, userProfile.rating + ratingDelta);
     userProfile.level = Math.max(1, Math.min(10, Math.floor(userProfile.rating / 500)));
 
@@ -3646,13 +3692,15 @@ async function fetchFreshProfile() {
         if (data.rating) userProfile.rating = data.rating;
         if (data.level) userProfile.level = data.level;
         saveLocalProfile(userProfile);
-        recordPointsTx(
-          diff >= 0 ? 'admin_grant' : 'admin_deduct',
-          `钱庄同步筹码 (${diff >= 0 ? '+' : ''}${diff})`,
-          diff,
-          userProfile.coins,
-          userProfile.phone || userProfile.id
-        );
+        if (Date.now() - lastClientMatchSettleTs >= 15000) {
+          recordPointsTx(
+            diff >= 0 ? 'admin_grant' : 'admin_deduct',
+            `钱庄同步筹码 (${diff >= 0 ? '+' : ''}${diff})`,
+            diff,
+            userProfile.coins,
+            userProfile.phone || userProfile.id
+          );
+        }
       }
     } catch {}
   }
@@ -3677,7 +3725,7 @@ function onGameRestart() {
         roomId: activeRoomId.value,
         gameType: activeGameType.value,
         sceneMode: activeSceneMode.value,
-        playerId: userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
     } catch {}
@@ -3726,7 +3774,7 @@ function onVisibilityChange() {
         ws.send(JSON.stringify({
           type: 'room_reconnect',
           roomId: activeRoom.value.id,
-          playerId: userProfile.id || 'P-me',
+          playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
           playerName: userProfile.name,
         }));
         addPacketLog('OUT', `WAKE_SYNC: ${activeRoom.value.id}`);
@@ -3735,7 +3783,7 @@ function onVisibilityChange() {
         ws.send(JSON.stringify({
           type: 'scene_reconnect',
           roomId: activeRoomId.value,
-          playerId: userProfile.id || 'P-me',
+          playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
           playerName: userProfile.name,
         }));
         addPacketLog('OUT', `WAKE_SCENE_RECONNECT: ${activeRoomId.value}`);

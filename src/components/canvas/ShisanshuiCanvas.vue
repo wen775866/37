@@ -719,13 +719,14 @@ const mySeat = computed(() => {
   const myName = props.currentUser?.name;
 
   if (myId) {
-    const idx = props.roomPlayers.findIndex((p: any) => {
+    const exactIdx = props.roomPlayers.findIndex((p: any) => p && (p.id === myId || p.originalId === myId));
+    if (exactIdx !== -1) return exactIdx;
+    const prefixIdx = props.roomPlayers.findIndex((p: any) => {
       if (!p) return false;
-      if (p.id === myId || p.originalId === myId) return true;
       if (typeof p.id === 'string' && (p.id.startsWith(myId) || (typeof myId === 'string' && myId.startsWith(p.id)))) return true;
       return false;
     });
-    if (idx !== -1) return idx;
+    if (prefixIdx !== -1) return prefixIdx;
   }
 
   if (myName) {
@@ -760,8 +761,7 @@ watch(() => props.initialDeal, (deal) => {
   if (props.isPracticeMode) return;
   if (deal && deal.seatCards) {
     const dealIdentifier = deal.dealId || deal.createdAt || (Array.isArray(deal.seatCards[0]) ? deal.seatCards[0].map((c: any) => c.id).join('-') : '');
-    if (fullHand.value && fullHand.value.length > 0 && (lastAppliedDealId.value === dealIdentifier || !lastAppliedDealId.value)) {
-      lastAppliedDealId.value = dealIdentifier;
+    if (fullHand.value && fullHand.value.length > 0 && lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier) {
       console.log('🛡️ [十三水防重置] 正在对局中且发牌一致，保持当前手牌与理牌');
       return;
     }
@@ -1124,7 +1124,7 @@ const allShowdownPlayers = computed<ShowdownPlayer[]>(() => {
     const oppSeat = oppSeats[i] ?? (i + 1);
     const rem = remoteSubmittedHands.value.get(oppSeat);
     const opp = (rem && rem.front && rem.mid && rem.back) ? rem : botHands.value[i];
-    const oppInfo = opponentsBreakdown.value[i];
+    const oppInfo = opponentsBreakdown.value.find((o) => o.seat === oppSeat) || opponentsBreakdown.value[i];
     if (!opp) continue;
 
     const rp = props.roomPlayers?.find((p: any, idx: number) => (typeof p?.seat === 'number' ? p.seat : idx) === oppSeat) || props.roomPlayers?.[oppSeat];
@@ -1607,12 +1607,25 @@ function handleReconnectSync(msg: any) {
   if (deal?.dealId) lastAppliedDealId.value = deal.dealId;
 
   if (bs?.shisanshuiSubmissions) {
-    Object.keys(bs.shisanshuiSubmissions).forEach((s) => {
-      submittedSeats.value.add(Number(s));
+    Object.entries(bs.shisanshuiSubmissions).forEach(([s, sub]: [string, any]) => {
+      const sNum = Number(s);
+      submittedSeats.value.add(sNum);
+      if (sub?.rawTiers?.front && sub?.rawTiers?.mid && sub?.rawTiers?.back) {
+        remoteSubmittedHands.value.set(sNum, sub.rawTiers);
+        if (sNum === mySeat.value) {
+          frontTier.value = sub.rawTiers.front;
+          midTier.value = sub.rawTiers.mid;
+          backTier.value = sub.rawTiers.back;
+        }
+      }
     });
     if (bs.shisanshuiSubmissions[mySeat.value]) {
       isWaitingShowdown.value = true;
     }
+  }
+  if (bs?.phase === 'ended' && bs?.shisanshuiSettlement && !hasCompared.value) {
+    executeShowdown(bs.shisanshuiSettlement);
+    return;
   }
   nextTick(() => drawBoard());
   saveLocalSnapshot();
@@ -1660,7 +1673,7 @@ function dealNewMatch(forceReApply = false, overrideDeal?: any) {
       isRed: c.isRed,
     }));
 
-    // 其他席位取自服务器发牌数据
+    // 其他席位取自服务器发牌数据（联机模式下对手牌面脱敏，不对其运行本地理牌）
     for (let i = 0; i < totalSeats; i++) {
       if (i === seatIdx) continue;
       const rawOppCards: Card[] = (rawDealCards[i] || []).map((c: any) => ({
@@ -1669,13 +1682,19 @@ function dealNewMatch(forceReApply = false, overrideDeal?: any) {
         suit: c.suit,
         label: c.label,
         isRed: c.isRed,
+        hidden: c.hidden,
       }));
-      const oppArrangement = autoArrangeThirteen(rawOppCards.map(toSSSCard), 'optimal');
-      opps.push({
-        front: toCards(oppArrangement.head, rawOppCards),
-        mid: toCards(oppArrangement.mid, rawOppCards),
-        back: toCards(oppArrangement.tail, rawOppCards),
-      });
+      const isOppMasked = rawOppCards.length > 0 && rawOppCards.some((c: any) => c.hidden || c.rank === 0 || c.suit === '?');
+      if (isOppMasked) {
+        opps.push({ front: [], mid: [], back: [] });
+      } else {
+        const oppArrangement = autoArrangeThirteen(rawOppCards.map(toSSSCard), 'optimal');
+        opps.push({
+          front: toCards(oppArrangement.head, rawOppCards),
+          mid: toCards(oppArrangement.mid, rawOppCards),
+          back: toCards(oppArrangement.tail, rawOppCards),
+        });
+      }
     }
   } else {
     // 单机/练习模式兜底：现场洗出一副 (或两副) 扑克牌
@@ -1743,7 +1762,7 @@ function dealNewMatch(forceReApply = false, overrideDeal?: any) {
             }
             handleCompare();
           }
-          if (!isMultiplayerRealtime || submittedSeats.value.size >= totalSeatsCount.value) {
+          if (!isMultiplayerRealtime) {
             executeShowdown();
           }
         }
@@ -2672,7 +2691,7 @@ function onCanvasPointerCancel(e: PointerEvent) {
   drawBoard();
 }
 
-function executeShowdown() {
+function executeShowdown(serverSettlement?: any) {
   if (hasCompared.value) return;
   clearLocalSnapshot();
   if (arrangeTimer) {
@@ -2697,78 +2716,108 @@ function executeShowdown() {
   const oppSeats = Array.from({ length: totalSeats }, (_, s) => s).filter((s) => s !== mySeat.value);
   const oppCount = oppSeats.length;
   let totalNet = 0;
-  let wonOpponentCount = 0;
   let shotCount = 0;
-  const oppResults = [];
+  let oppResults: any[] = [];
 
-  for (let i = 0; i < oppCount; i++) {
-    const oppSeat = oppSeats[i];
-    let oppFront = botHands.value[i]?.front || [];
-    let oppMid = botHands.value[i]?.mid || [];
-    let oppBack = botHands.value[i]?.back || [];
-
-    // 若联机真人玩家已提交理牌，优先使用真人玩家真实提交的各墩牌型！
-    if (remoteSubmittedHands.value.has(oppSeat)) {
-      const rem = remoteSubmittedHands.value.get(oppSeat)!;
-      if (rem.front && rem.mid && rem.back) {
-        oppFront = rem.front;
-        oppMid = rem.mid;
-        oppBack = rem.back;
-      }
-    }
-
-    const oppHand = {
-      head: oppFront.map(toSSSCard),
-      mid: oppMid.map(toSSSCard),
-      tail: oppBack.map(toSSSCard),
-    };
-
-    const rp = props.roomPlayers?.find((p: any, idx: number) => (typeof p?.seat === 'number' ? p.seat : idx) === oppSeat) || props.roomPlayers?.[oppSeat];
-    const oppDisplayName = rp?.name
-      ? `${bNames[i] || `牌友${oppSeat + 1}`} (${rp.name})`
-      : (bNames[i] || `牌友${oppSeat + 1}`);
-
-    const vsResult = compareTwoPlayers(myHand, oppHand, oppSeat, oppDisplayName);
-    if (vsResult.finalWater > 0) wonOpponentCount++;
-    if (vsResult.isShot && vsResult.finalWater > 0) shotCount++;
-
-    oppResults.push({
-      seat: oppSeat,
-      name: oppDisplayName,
-      netWater: vsResult.finalWater,
-      rawWater: vsResult.rawWater,
-      isShot: vsResult.isShot,
-      isFoulOpp: vsResult.isFoulOpp,
-      tiers: vsResult.tiers,
-      summary: vsResult.summary,
-      specialMe: vsResult.specialMe,
-      specialOpp: vsResult.specialOpp,
-      handSummary: `头:${getHandLabel(oppFront, 3)} 中:${getHandLabel(oppMid, 5)} 尾:${getHandLabel(oppBack, 5)}`,
+  if (serverSettlement && Array.isArray(serverSettlement.netWaters) && Array.isArray(serverSettlement.perSeatOppResults?.[mySeat.value])) {
+    totalNet = typeof serverSettlement.netWaters[mySeat.value] === 'number' ? serverSettlement.netWaters[mySeat.value] : 0;
+    isGrandSlam.value = Boolean(serverSettlement.grandSlamSeats?.[mySeat.value]);
+    const srvOppList = serverSettlement.perSeatOppResults[mySeat.value] as any[];
+    oppResults = oppSeats.map((oppSeat, i) => {
+      const srv = srvOppList.find((r: any) => Number(r.seat) === oppSeat) || srvOppList[i] || {};
+      const rem = remoteSubmittedHands.value.get(oppSeat);
+      const oppFront = rem?.front || botHands.value[i]?.front || [];
+      const oppMid = rem?.mid || botHands.value[i]?.mid || [];
+      const oppBack = rem?.back || botHands.value[i]?.back || [];
+      const rp = props.roomPlayers?.find((p: any, idx: number) => (typeof p?.seat === 'number' ? p.seat : idx) === oppSeat) || props.roomPlayers?.[oppSeat];
+      const oppDisplayName = rp?.name
+        ? `${bNames[i] || `牌友${oppSeat + 1}`} (${rp.name})`
+        : (srv.name || bNames[i] || `牌友${oppSeat + 1}`);
+      if (srv.isShot && srv.netWater > 0) shotCount++;
+      return {
+        ...srv,
+        seat: oppSeat,
+        name: oppDisplayName,
+        handSummary: `头:${getHandLabel(oppFront, 3)} 中:${getHandLabel(oppMid, 5)} 尾:${getHandLabel(oppBack, 5)}`,
+      };
     });
-    totalNet += vsResult.finalWater;
-  }
-
-  // 触发全垒打判定：打枪全场所有对手
-  isGrandSlam.value = shotCount === oppCount && oppCount > 0;
-  if (isGrandSlam.value) {
-    totalNet *= 2; 
-    for (const res of oppResults) {
-      res.netWater *= 2;
-      res.summary += ' · 【触发全垒打再翻倍！】';
-      if (res.tiers) {
-        res.tiers.forEach((t: any) => {
-          t.netWater *= 2;
-          t.baseWater *= 2;
-          t.bonusWater *= 2;
-        });
-      }
+    if (isGrandSlam.value) {
+      haptics.victory();
+      soundFX.speakAction('grand_slam');
+    } else if (shotCount > 0) {
+      soundFX.speakAction('gunshot');
+    } else {
+      soundFX.speakVoice('开牌比水完毕。');
     }
-    haptics.victory();
-    soundFX.speakAction('grand_slam');
-  } else if (shotCount > 0) {
-    soundFX.speakAction('gunshot');
   } else {
-    soundFX.speakVoice('开牌比水完毕。');
+    for (let i = 0; i < oppCount; i++) {
+      const oppSeat = oppSeats[i];
+      let oppFront = botHands.value[i]?.front || [];
+      let oppMid = botHands.value[i]?.mid || [];
+      let oppBack = botHands.value[i]?.back || [];
+
+      // 若联机真人玩家已提交理牌，优先使用真人玩家真实提交的各墩牌型！
+      if (remoteSubmittedHands.value.has(oppSeat)) {
+        const rem = remoteSubmittedHands.value.get(oppSeat)!;
+        if (rem.front && rem.mid && rem.back) {
+          oppFront = rem.front;
+          oppMid = rem.mid;
+          oppBack = rem.back;
+        }
+      }
+
+      const oppHand = {
+        head: oppFront.map(toSSSCard),
+        mid: oppMid.map(toSSSCard),
+        tail: oppBack.map(toSSSCard),
+      };
+
+      const rp = props.roomPlayers?.find((p: any, idx: number) => (typeof p?.seat === 'number' ? p.seat : idx) === oppSeat) || props.roomPlayers?.[oppSeat];
+      const oppDisplayName = rp?.name
+        ? `${bNames[i] || `牌友${oppSeat + 1}`} (${rp.name})`
+        : (bNames[i] || `牌友${oppSeat + 1}`);
+
+      const vsResult = compareTwoPlayers(myHand, oppHand, oppSeat, oppDisplayName);
+      if (vsResult.isShot && vsResult.finalWater > 0) shotCount++;
+
+      oppResults.push({
+        seat: oppSeat,
+        name: oppDisplayName,
+        netWater: vsResult.finalWater,
+        rawWater: vsResult.rawWater,
+        isShot: vsResult.isShot,
+        isFoulOpp: vsResult.isFoulOpp,
+        tiers: vsResult.tiers,
+        summary: vsResult.summary,
+        specialMe: vsResult.specialMe,
+        specialOpp: vsResult.specialOpp,
+        handSummary: `头:${getHandLabel(oppFront, 3)} 中:${getHandLabel(oppMid, 5)} 尾:${getHandLabel(oppBack, 5)}`,
+      });
+      totalNet += vsResult.finalWater;
+    }
+
+    // 触发全垒打判定：打枪全场所有对手
+    isGrandSlam.value = shotCount === oppCount && oppCount > 0;
+    if (isGrandSlam.value) {
+      totalNet *= 2;
+      for (const res of oppResults) {
+        res.netWater *= 2;
+        res.summary += ' · 【触发全垒打再翻倍！】';
+        if (res.tiers) {
+          res.tiers.forEach((t: any) => {
+            t.netWater *= 2;
+            t.baseWater *= 2;
+            t.bonusWater *= 2;
+          });
+        }
+      }
+      haptics.victory();
+      soundFX.speakAction('grand_slam');
+    } else if (shotCount > 0) {
+      soundFX.speakAction('gunshot');
+    } else {
+      soundFX.speakVoice('开牌比水完毕。');
+    }
   }
 
   totalScore.value = totalNet;
@@ -2849,11 +2898,6 @@ function handleCompare() {
       })
     );
   } catch {}
-
-  const requiredCount = totalSeatsCount.value;
-  if (submittedSeats.value.size >= requiredCount) {
-    executeShowdown();
-  }
 }
 
 watch([frontTier, midTier, backTier, isWaitingShowdown], () => {
@@ -2890,17 +2934,21 @@ function onWsMessage(ev: MessageEvent) {
         if (evt.rawTiers) {
           remoteSubmittedHands.value.set(s, evt.rawTiers);
         }
-        const requiredCount = totalSeatsCount.value;
-        if (submittedSeats.value.size >= requiredCount && isWaitingShowdown.value && !hasCompared.value) {
-          executeShowdown();
-        }
       } else if (evt.action === 'shisanshui_all_submitted') {
         if (evt.submissions) {
           for (const [sKey, sub] of Object.entries(evt.submissions as any)) {
             const sNum = Number(sKey);
             submittedSeats.value.add(sNum);
-            if ((sub as any).rawTiers) {
+            if ((sub as any)?.rawTiers) {
               remoteSubmittedHands.value.set(sNum, (sub as any).rawTiers);
+              if (sNum === mySeat.value && (!isSetComplete.value || !isWaitingShowdown.value)) {
+                const rt = (sub as any).rawTiers;
+                if (rt.front && rt.mid && rt.back) {
+                  frontTier.value = rt.front;
+                  midTier.value = rt.mid;
+                  backTier.value = rt.back;
+                }
+              }
             }
           }
         }
@@ -2911,7 +2959,7 @@ function onWsMessage(ev: MessageEvent) {
             }
             isWaitingShowdown.value = true;
           }
-          executeShowdown();
+          executeShowdown(evt.settlement);
         }
       }
     }

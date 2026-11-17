@@ -585,13 +585,14 @@ const mySeat = computed(() => {
   const myName = props.currentUser?.name;
 
   if (myId) {
-    const idx = props.roomPlayers.findIndex((p: any) => {
+    const exactIdx = props.roomPlayers.findIndex((p: any) => p && (p.id === myId || p.originalId === myId));
+    if (exactIdx !== -1) return exactIdx;
+    const prefixIdx = props.roomPlayers.findIndex((p: any) => {
       if (!p) return false;
-      if (p.id === myId || p.originalId === myId) return true;
       if (typeof p.id === 'string' && (p.id.startsWith(myId) || (typeof myId === 'string' && myId.startsWith(p.id)))) return true;
       return false;
     });
-    if (idx !== -1) return idx;
+    if (prefixIdx !== -1) return prefixIdx;
   }
 
   if (myName) {
@@ -867,16 +868,24 @@ const qiangGongTooltip = computed(() => {
   return '开启强攻：所有已出牌收回，由方块4先出重新开打！强攻独胜赢 60 分(其余各输 20 分)，被破输 60 分(其余各得 20 分)';
 });
 
-function handleSurrender(seat: number = mySeat.value, isRemote = false) {
+function handleSurrender(seat: number = mySeat.value, isRemote = false, serverAuthRes?: any) {
   if (winnerSeat.value !== null || (hands[seat]?.length || 0) !== 13 || hasPassedSeats[seat]) return;
+  if (!isRemote && !hasSpade3AndA(seat)) return;
 
   stopTurnCountdown();
   if (botTimer) clearTimeout(botTimer);
   if (autoHostTimer) clearTimeout(autoHostTimer);
   if (animFrameId) cancelAnimationFrame(animFrameId);
 
-  const res = calculateYansanSurrenderSettlement(selectedRoom.value || '5-10', seat);
-  winnerSeat.value = (seat + 1) % 4;
+  const res = serverAuthRes && Array.isArray(serverAuthRes.seatScores)
+    ? {
+        winnerAlliance: serverAuthRes.winnerAlliance,
+        summary: serverAuthRes.summary,
+        seatScores: [...serverAuthRes.seatScores],
+        winnerSeat: serverAuthRes.winnerSeat ?? (seat + 1) % 4,
+      }
+    : calculateYansanSurrenderSettlement(selectedRoom.value || '5-10', seat);
+  winnerSeat.value = res.winnerSeat ?? (seat + 1) % 4;
   finishedSeats.splice(0, finishedSeats.length, (seat + 1) % 4, (seat + 2) % 4, (seat + 3) % 4, seat);
 
   allianceScoreResult.value = {
@@ -937,9 +946,9 @@ function handleSurrender(seat: number = mySeat.value, isRemote = false) {
   });
 }
 
-function handleQiangGong(seat: number = mySeat.value, isRemote = false) {
+function handleQiangGong(seat: number = mySeat.value, isRemote = false, starterSeatOverride?: number) {
   if (isQiangGongActive.value || winnerSeat.value !== null) return;
-  if (!hasSpade3AndA(seat) || (hands[seat]?.length || 0) !== 13 || hasPassedSeats[seat]) return;
+  if ((!isRemote && !hasSpade3AndA(seat)) || (hands[seat]?.length || 0) !== 13 || hasPassedSeats[seat]) return;
 
   isQiangGongActive.value = true;
   qiangGongSeat.value = seat;
@@ -960,13 +969,16 @@ function handleQiangGong(seat: number = mySeat.value, isRemote = false) {
   errorTip.value = '';
 
   // 强攻不是首出牌权，仍然由方块4先出
-  let starter = 0;
-  for (let i = 0; i < 4; i++) {
-    if (initialHands[i].some((c) => c.rank === 4 && c.suit === '♦')) {
-      starter = i;
-      break;
+  let starter = typeof starterSeatOverride === 'number' ? starterSeatOverride : -1;
+  if (starter < 0) {
+    for (let i = 0; i < 4; i++) {
+      if (initialHands[i].some((c) => c.rank === 4 && c.suit === '♦')) {
+        starter = i;
+        break;
+      }
     }
   }
+  if (starter < 0) starter = turnSeat.value;
   turnSeat.value = starter;
   isFirstTurn.value = true;
 
@@ -996,6 +1008,8 @@ function handleQiangGong(seat: number = mySeat.value, isRemote = false) {
     props.ws.send(JSON.stringify({
       type: 'game_move',
       roomId: props.roomId,
+      seat: mySeat.value,
+      payload: { action: 'qianggong', seat },
       event: { action: 'qianggong', seat }
     }));
   }
@@ -1042,36 +1056,6 @@ function resetRemoteWatchdog() {
   if (remoteWatchdogTimer) {
     clearTimeout(remoteWatchdogTimer);
     remoteWatchdogTimer = null;
-  }
-  // 在纯真人联机场景下，如果轮到其他玩家出牌超过 52 秒未出牌，自动保底顺延防卡桌
-  if (!props.isPracticeMode && turnSeat.value !== mySeat.value && winnerSeat.value === null) {
-    remoteWatchdogTimer = setTimeout(() => {
-      if (!props.isPracticeMode && turnSeat.value !== mySeat.value && winnerSeat.value === null) {
-        const s = turnSeat.value;
-        if (isFirstTurn.value && hands[s]?.some((c) => c.rank === 4 && c.suit === '♦')) {
-          const d4 = hands[s].find((c) => c.rank === 4 && c.suit === '♦')!;
-          const d4Combo = evaluateCombo([d4], s);
-          if (d4Combo) {
-            hands[s] = hands[s].filter((c) => c.id !== d4.id);
-            lastCombo.value = d4Combo;
-            isFirstTurn.value = false;
-            afterComboPlayed(s, d4Combo, true);
-          }
-        } else if (lastCombo.value && lastCombo.value.seat !== s) {
-          executePassFlow(s, true);
-        } else {
-          const fallback = hands[s]?.[0];
-          if (fallback) {
-            const ev = evaluateCombo([fallback], s);
-            if (ev) {
-              hands[s] = hands[s].filter((c) => c.id !== fallback.id);
-              lastCombo.value = ev;
-              afterComboPlayed(s, ev, true);
-            }
-          }
-        }
-      }
-    }, 65000);
   }
 }
 
@@ -1654,6 +1638,26 @@ function handleReconnectSync(msg: any) {
   if (bs?.finishedSeats && Array.isArray(bs.finishedSeats)) {
     finishedSeats.splice(0, finishedSeats.length, ...bs.finishedSeats);
   }
+  if (bs?.isQiangGongActive) {
+    isQiangGongActive.value = true;
+    qiangGongSeat.value = typeof bs.qiangGongSeat === 'number' ? bs.qiangGongSeat : null;
+  }
+  if (typeof bs?.extraState?.spade3Seat === 'number') {
+    spade3Seat.value = bs.extraState.spade3Seat;
+  }
+  if (typeof bs?.extraState?.spadeASeat === 'number') {
+    spadeASeat.value = bs.extraState.spadeASeat;
+  }
+  if (Array.isArray(bs?.extraState?.seatPlayedCards)) {
+    for (let s = 0; s < 4; s++) {
+      if (Array.isArray(bs.extraState.seatPlayedCards[s])) {
+        seatPlayedCards[s] = bs.extraState.seatPlayedCards[s];
+      }
+    }
+  }
+  if (deal?.seatCards?.[mySeat.value] && (!hands[mySeat.value]?.length || (bs?.handsCount?.[mySeat.value] !== undefined && deal.seatCards[mySeat.value].length === bs.handsCount[mySeat.value]))) {
+    hands[mySeat.value] = sortCards([...deal.seatCards[mySeat.value]]);
+  }
   if (bs?.handsCount && Array.isArray(bs.handsCount)) {
     for (let s = 0; s < 4; s++) {
       if (s !== mySeat.value && typeof bs.handsCount[s] === 'number') {
@@ -1755,9 +1759,18 @@ function applyDeal(deal: any, forceReApply = false) {
     hands[i] = [...initialHands[i]];
   }
 
-  const holders = detectYansanSpecialHolders(hands);
-  spade3Seat.value = holders.spade3Seat;
-  spadeASeat.value = holders.spadeASeat;
+  const isMaskedOnline = !props.isPracticeMode && !isAllOtherPlayersBots.value;
+  if (isMaskedOnline) {
+    spade3Seat.value = null;
+    spadeASeat.value = null;
+    const myH = initialHands[curMySeat] || [];
+    if (myH.some((c) => c.rank === 3 && c.suit === '♠')) spade3Seat.value = curMySeat;
+    if (myH.some((c) => c.rank === 14 && c.suit === '♠')) spadeASeat.value = curMySeat;
+  } else {
+    const holders = detectYansanSpecialHolders(hands);
+    spade3Seat.value = holders.spade3Seat;
+    spadeASeat.value = holders.spadeASeat;
+  }
   const starter = deal.starterSeat !== undefined ? deal.starterSeat : 0;
   turnSeat.value = starter;
   isFirstTurn.value = true;
@@ -1970,6 +1983,11 @@ function checkGameFinishAfterPlay(seat: number, isRemote: boolean = false) {
 
   if (!finishedSeats.includes(seat)) {
     finishedSeats.push(seat);
+  }
+
+  if (!props.isPracticeMode && !isAllOtherPlayersBots.value && props.ws && props.ws.readyState === WebSocket.OPEN) {
+    // 多人联机房对手牌面脱敏，严禁客户端依据未亮出的 ♠3/♠A 猜测终局或自行结算，交由服务端权威下发 finish 结算
+    return;
   }
 
   const isQiangGong = isQiangGongActive.value;
@@ -2246,8 +2264,19 @@ function normalizeTargetCombo(target: any): Combo | null {
   }
 
   const primaryRank = target.primaryRank !== undefined ? target.primaryRank : (target.rank !== undefined ? target.rank : (target.cards?.[0]?.rank || 0));
-  const primarySuitVal = target.primarySuitVal !== undefined ? target.primarySuitVal : (target.suitVal !== undefined ? target.suitVal : (target.cards?.[0]?.suitVal || 0));
-  const flushSuit = target.flushSuit !== undefined ? target.flushSuit : (target.cards?.[0]?.suitVal || 0);
+  let primarySuitVal = target.primarySuitVal;
+  if (primarySuitVal === undefined) {
+    if (Array.isArray(target.cards) && target.cards.length > 0) {
+      const matchingPrimary = target.cards.filter((c: any) => c && c.rank === primaryRank);
+      const pool = matchingPrimary.length > 0 ? matchingPrimary : target.cards;
+      primarySuitVal = Math.max(...pool.map((c: any) => getCardPower(c)));
+    } else if (primaryRank) {
+      primarySuitVal = getRankWeight(primaryRank) * 10 + (target.suitVal || 0);
+    } else {
+      primarySuitVal = target.suitVal || 0;
+    }
+  }
+  const flushSuit = target.flushSuit !== undefined ? target.flushSuit : (target.suitVal !== undefined ? target.suitVal : (target.cards?.[0]?.suitVal || 0));
 
   return {
     seat: target.seat ?? 0,
@@ -2727,6 +2756,7 @@ function onPointerUp(e: PointerEvent) {
 function executeBaoDanPlay(seat: number) {
   if (winnerSeat.value !== null || (hands[seat]?.length || 0) !== 1) return;
   const remainingCard = hands[seat][0];
+  if (!remainingCard || (remainingCard as any).hidden || remainingCard.rank <= 0) return;
   const cb = evaluateCombo([remainingCard], seat);
   if (!cb) return;
   if (lastCombo.value && lastCombo.value.seat !== seat && !canBeat(cb, lastCombo.value)) {
@@ -3019,10 +3049,12 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
         seatStatus[seat] = `🚨 报单绝杀 · 【${names[seat]}】准备打出最后一张牌...`;
         drawTable();
         emitStatus();
-        if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
-        baodanDelayedTimer = setTimeout(() => {
-          executeBaoDanPlay(seat);
-        }, 1800);
+        if (seat === mySeat.value || isSeatBot(seat)) {
+          if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
+          baodanDelayedTimer = setTimeout(() => {
+            executeBaoDanPlay(seat);
+          }, 1800);
+        }
         return;
       }
 
@@ -3283,6 +3315,19 @@ function handleRemoteGameEvent(evt: any) {
   const isFinishAction = evt.action === 'finish' || (evt.winner !== undefined && evt.winner !== null);
 
   if (isFinishAction) {
+    stopTurnCountdown();
+    if (botTimer) clearTimeout(botTimer);
+    if (autoHostTimer) clearTimeout(autoHostTimer);
+    if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
+    if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
+    if (passClearTimer) clearTimeout(passClearTimer);
+    if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
+    if (animFrameId) cancelAnimationFrame(animFrameId);
+    isAutoHost.value = false;
+
+    if (typeof evt.spade3Seat === 'number') spade3Seat.value = evt.spade3Seat;
+    if (typeof evt.spadeASeat === 'number') spadeASeat.value = evt.spadeASeat;
+
     if (Array.isArray(evt.finishedSeats) && evt.finishedSeats.length > 0) {
       finishedSeats.splice(0, finishedSeats.length, ...evt.finishedSeats);
     }
@@ -3290,6 +3335,8 @@ function handleRemoteGameEvent(evt: any) {
     if (incomingAuthRes && Array.isArray(incomingAuthRes.seatScores)) {
       // 权威结算数据包直通同步：所有4家客户端绝对采用同一份席位得分与同盟结算结果，杜绝网络丢包导致结算分歧
       const authRes = incomingAuthRes;
+      if (typeof authRes.spade3Seat === 'number') spade3Seat.value = authRes.spade3Seat;
+      if (typeof authRes.spadeASeat === 'number') spadeASeat.value = authRes.spadeASeat;
       const winSeat = evt.winner !== undefined && evt.winner !== null
         ? Number(evt.winner)
         : (authRes.isTie ? -1 : (finishedSeats[0] ?? 0));
@@ -3408,9 +3455,9 @@ function handleRemoteGameEvent(evt: any) {
     consecutivePasses.value++;
     executePassFlow(s, true);
   } else if (action === 'qianggong') {
-    handleQiangGong(s, true);
+    handleQiangGong(s, true, typeof evt.starterSeat === 'number' ? evt.starterSeat : undefined);
   } else if (action === 'surrender') {
-    handleSurrender(s, true);
+    handleSurrender(s, true, incomingAuthRes);
   }
 }
 
@@ -4429,14 +4476,22 @@ function onWsMessage(ev: MessageEvent) {
       const evt = msg.event || msg.payload;
       if (!evt) return;
 
+      const isFinishEvt =
+        evt.action === 'finish' ||
+        evt.action === 'surrender' ||
+        Boolean(evt.fromServerSettlement) ||
+        (evt.winner !== undefined && evt.winner !== null);
+
       const moveCount = typeof msg.moveCount === 'number' ? msg.moveCount : -1;
       const moveKey = `${evt.seat}_${evt.action}_${evt.combo?.label || ''}_${evt.combo?.cards?.map((c: any) => c.id).sort().join(',') || ''}`;
 
-      if (moveCount > 0 && moveCount === lastProcessedMoveCount) {
-        return;
-      }
-      if (moveKey && moveKey === lastProcessedMoveKey && moveCount <= 0) {
-        return;
+      if (!isFinishEvt) {
+        if (moveCount > 0 && moveCount === lastProcessedMoveCount) {
+          return;
+        }
+        if (moveKey && moveKey === lastProcessedMoveKey && moveCount <= 0) {
+          return;
+        }
       }
 
       if (moveCount > 0) {
@@ -4455,10 +4510,7 @@ function onWsMessage(ev: MessageEvent) {
         return;
       }
 
-      if (evt.seat !== mySeat.value) {
-        handleRemoteGameEvent(evt);
-      } else if (evt.autoPlay || evt.autoPass) {
-        // 服务端超时自动出牌/过牌，本家同步执行
+      if (isFinishEvt || evt.seat !== mySeat.value || evt.autoPlay || evt.autoPass) {
         handleRemoteGameEvent(evt);
       }
     }

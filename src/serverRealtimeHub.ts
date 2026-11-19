@@ -1,12 +1,17 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { loadDatabase, saveDatabase } from './serverStorage.ts';
 import {
-  getOrInitServerCarriage,
-  loadBookingCarriagesFromDisk,
-  saveBookingCarriagesToDisk,
-  withBookingCarriagesLock,
-} from './serverApi.ts';
-import { initServerCarriageTables } from './games/shisanshui/bookingTrain.ts';
+  ackServerUnreadSettlements,
+  advanceServerBookingCarriage,
+  getServerBookingState,
+  initServerBookingInventory,
+  pickServerBookingTable,
+  runServer0600SettlementSweep,
+  selectServerBookingSeat,
+  simulateServerBookingSettlement,
+  submitServerBookingHand,
+  type SettledUserNotification,
+} from './games/shisanshui/serverBookingService.ts';
 import { presenceTracker } from './presenceTracker.ts';
 import { generateRoomDeal } from './gameDeckService.ts';
 import { createDefaultBoardState, getSceneRequiredCoins, type AuthoritativeBoardState } from './gameLogic/index.ts';
@@ -89,42 +94,51 @@ export function sanitizeDealForSeat(gameType: string, deal: any, recipientSeat: 
   delete copy.deck;
   delete copy.initialSeatCards;
 
-  if (Array.isArray(deal.seatCards)) {
-    copy.seatCards = deal.seatCards.map((hand: any[], s: number) => {
-      if (!Array.isArray(hand)) return [];
-      if (s === recipientSeat) return [...hand];
-      if (gameType === 'shisanshui') {
-        return hand.map((_, idx) => ({
-          id: `hidden-${s}-${idx}`,
-          rank: 0,
-          suit: '?',
-          suitVal: 0,
-          label: '?',
-          isRed: false,
-          hidden: true,
-        }));
-      }
-      if (gameType === 'yansan') {
-        return hand.map((_, idx) => ({
-          id: `hidden-${s}-${idx}`,
-          rank: 0,
-          suitVal: 0,
-          label: '?',
-          suit: '?',
-          isRed: false,
-          hidden: true,
-        }));
-      }
-      // mahjong
+  const maskOpponentHand = (hand: any[], s: number) => {
+    if (!Array.isArray(hand)) return [];
+    if (s === recipientSeat) return [...hand];
+    if (gameType === 'shisanshui') {
       return hand.map((_, idx) => ({
         id: `hidden-${s}-${idx}`,
-        type: 'wan',
-        value: 1,
-        text: '一万',
-        color: '#DC2626',
+        rank: 0,
+        suit: '?',
+        suitVal: 0,
+        label: '?',
+        isRed: false,
         hidden: true,
       }));
-    });
+    }
+    if (gameType === 'yansan') {
+      return hand.map((_, idx) => ({
+        id: `hidden-${s}-${idx}`,
+        rank: 0,
+        suitVal: 0,
+        label: '?',
+        suit: '?',
+        isRed: false,
+        hidden: true,
+      }));
+    }
+    // mahjong
+    return hand.map((_, idx) => ({
+      id: `hidden-${s}-${idx}`,
+      type: 'wan',
+      value: 1,
+      text: '一万',
+      color: '#DC2626',
+      hidden: true,
+    }));
+  };
+
+  if (Array.isArray(deal.seatCards)) {
+    copy.seatCards = deal.seatCards.map((hand: any[], s: number) => maskOpponentHand(hand, s));
+  } else if (deal.seatCards && typeof deal.seatCards === 'object') {
+    const maskedObj: Record<number, any[]> = {};
+    for (const [seatKey, hand] of Object.entries(deal.seatCards)) {
+      const s = Number(seatKey);
+      maskedObj[s] = maskOpponentHand(Array.isArray(hand) ? hand : [], s);
+    }
+    copy.seatCards = maskedObj;
   }
 
   if (gameType === 'mahjong' && Array.isArray(deal.remainingWall)) {
@@ -853,6 +867,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
     if (room.gameType === 'mahjong') {
       defaultBoard.extraState.claimWindow = null;
       defaultBoard.extraState.wallRemaining = Array.isArray(freshDeal.remainingWall) ? freshDeal.remainingWall.length : 83;
+      const dSeat = typeof freshDeal.dealerSeat === 'number' ? freshDeal.dealerSeat : 0;
+      defaultBoard.turnSeat = dSeat;
+      defaultBoard.handsCount = [0, 1, 2, 3].map((s) =>
+        Array.isArray(freshDeal.seatCards?.[s]) ? freshDeal.seatCards[s].length : (s === dSeat ? 14 : 13)
+      );
     }
 
     if (!rooms.has(room.id)) {
@@ -1177,15 +1196,29 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           return;
         }
 
-        // 预约场火车专列状态序列化存取（加异步文件锁）
+        // 预约场火车专列权威同步（多端一致性、实时占座、13张防作弊校验、模拟与06:00真实入账）
         if (msg.type === 'booking_get_carriage') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const carriageNum = Number(msg.carriageNumber) || 1;
-          const carriage = await withBookingCarriagesLock(() => getOrInitServerCarriage(sceneMode, carriageNum));
+          const userId = msg.playerId || msg.userId || (ws as any).userId || 'guest';
+          const state = await getServerBookingState({
+            sceneMode,
+            userId,
+            playerName: msg.playerName || '茶客',
+            avatar: msg.avatar || '👑',
+            requestedCarriageId: msg.carriageId || undefined,
+            requestedCarriageNumber: msg.carriageNumber ? Number(msg.carriageNumber) : undefined,
+          });
+          if (state.settledNotifications?.length) {
+            emitBookingSettlementNotifications(state.settledNotifications);
+          }
           ws.send(
             JSON.stringify({
               type: 'booking_carriage_state',
-              carriage,
+              sceneMode,
+              carriage: state.carriage,
+              archivedCarriages: state.archivedCarriages,
+              settlementHistory: state.settlementHistory,
+              unreadSettlements: state.unreadSettlements,
               serverTs: Date.now(),
             })
           );
@@ -1194,25 +1227,76 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_select_seat') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const carriageNum = Number(msg.carriageNumber) || 1;
-          const carriage = await withBookingCarriagesLock(() => {
-            const carriages = loadBookingCarriagesFromDisk();
-            const key = `${sceneMode}_car_${carriageNum}`;
-            const cur = carriages[key] || initServerCarriageTables(carriageNum, sceneMode);
-            cur.selectedSeat = msg.seat || '东';
-            if (cur.unplayedTableIndices.length > 0 && !cur.currentActiveTableIndex) {
-              const randIdx = Math.floor(Math.random() * cur.unplayedTableIndices.length);
-              cur.currentActiveTableIndex = cur.unplayedTableIndices[randIdx];
-            }
-            carriages[key] = cur;
-            saveBookingCarriagesToDisk(carriages);
-            return cur;
+          const userId = msg.playerId || msg.userId || 'guest';
+          const res = await selectServerBookingSeat({
+            sceneMode,
+            userId,
+            playerName: msg.playerName || '茶客',
+            avatar: msg.avatar || '👑',
+            seat: msg.seat || '东',
+            carriageId: msg.carriageId || undefined,
+            carriageNumber: msg.carriageNumber ? Number(msg.carriageNumber) : undefined,
           });
+          if (!res.ok) {
+            ws.send(
+              JSON.stringify({
+                type: 'booking_error',
+                action: 'select_seat',
+                error: res.error,
+                carriage: (res as any).carriage || null,
+                serverTs: Date.now(),
+              })
+            );
+            return;
+          }
           ws.send(
             JSON.stringify({
               type: 'booking_seat_selected',
-              carriage,
-              activeTableIndex: carriage.currentActiveTableIndex,
+              sceneMode,
+              carriage: res.carriage,
+              archivedCarriages: res.archivedCarriages,
+              activeTableIndex: res.carriage.currentActiveTableIndex,
+              serverTs: Date.now(),
+            })
+          );
+          broadcast({
+            type: 'booking_carriage_occupants_updated',
+            sceneMode,
+            carriageId: res.carriageId,
+            carriageNumber: res.carriageNumber,
+            seatOccupants: res.rawSeatOccupants,
+          });
+          return;
+        }
+
+        if (msg.type === 'booking_pick_table') {
+          const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+          const userId = msg.playerId || msg.userId || 'guest';
+          const res = await pickServerBookingTable({
+            sceneMode,
+            userId,
+            carriageId: msg.carriageId || undefined,
+            carriageNumber: msg.carriageNumber ? Number(msg.carriageNumber) : undefined,
+            specificTableIndex: msg.tableIndex ? Number(msg.tableIndex) : undefined,
+          });
+          if (!res.ok) {
+            ws.send(
+              JSON.stringify({
+                type: 'booking_error',
+                action: 'pick_table',
+                error: res.error,
+                serverTs: Date.now(),
+              })
+            );
+            return;
+          }
+          ws.send(
+            JSON.stringify({
+              type: 'booking_table_picked',
+              sceneMode,
+              carriage: res.carriage,
+              archivedCarriages: res.archivedCarriages,
+              activeTableIndex: res.carriage.currentActiveTableIndex,
               serverTs: Date.now(),
             })
           );
@@ -1221,49 +1305,159 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_submit_hand' || msg.type === 'booking_submit') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const carriageNum = Number(msg.carriageNumber) || 1;
-          const result = await withBookingCarriagesLock(() => {
-            const carriages = loadBookingCarriagesFromDisk();
-            const key = `${sceneMode}_car_${carriageNum}`;
-            const carriage = carriages[key] || initServerCarriageTables(carriageNum, sceneMode);
-            const tIdx = Number(msg.tableIndex) || carriage.currentActiveTableIndex || 1;
-            const table = carriage.tables.find((t: any) => t.tableIndex === tIdx);
-            if (!table) return null;
-            table.isSubmitted = true;
-            table.playerSeat = msg.playerSeat || carriage.selectedSeat || '东';
-            table.playerId = msg.playerId;
-            table.playerName = msg.playerName;
-            table.playerHand = msg.playerHand;
-            table.submittedAt = Date.now();
-            table.status = 'submitted';
-            carriage.unplayedTableIndices = carriage.unplayedTableIndices.filter((idx: number) => idx !== tIdx);
-            if (carriage.unplayedTableIndices.length === 0) {
-              carriage.isCompleted = true;
-            }
-            carriage.currentActiveTableIndex = null;
-            carriages[key] = carriage;
-            saveBookingCarriagesToDisk(carriages);
-            return { carriage, table, tIdx };
+          const userId = msg.playerId || msg.userId || 'guest';
+          const res = await submitServerBookingHand({
+            sceneMode,
+            userId,
+            playerName: msg.playerName || '茶客',
+            avatar: msg.avatar || '👑',
+            carriageId: msg.carriageId || undefined,
+            carriageNumber: msg.carriageNumber ? Number(msg.carriageNumber) : undefined,
+            tableIndex: msg.tableIndex ? Number(msg.tableIndex) : undefined,
+            playerSeat: msg.playerSeat,
+            handTiers: msg.playerHand,
+            isGraceSubmission: Boolean(msg.isGraceSubmission),
           });
-          if (result) {
+          if (!res.ok) {
             ws.send(
               JSON.stringify({
-                type: 'booking_submit_ack',
-                success: true,
-                carriage: result.carriage,
-                submittedTable: result.table,
-                remainingCount: result.carriage.unplayedTableIndices.length,
-                isCarriageCompleted: result.carriage.isCompleted,
+                type: 'booking_error',
+                action: 'submit_hand',
+                error: res.error,
                 serverTs: Date.now(),
               })
             );
-            broadcast({
-              type: 'booking_table_updated',
+            return;
+          }
+          if (res.settledNotifications?.length) {
+            emitBookingSettlementNotifications(res.settledNotifications);
+          }
+          ws.send(
+            JSON.stringify({
+              type: 'booking_submit_ack',
+              success: true,
               sceneMode,
-              carriageNumber: carriageNum,
-              tableIndex: result.tIdx,
-              table: result.table,
+              carriage: res.carriage,
+              submittedTable: res.submittedTable,
+              remainingCount: res.remainingCount,
+              isCarriageCompleted: res.isCarriageCompleted,
+              archivedCarriages: res.archivedCarriages,
+              settlementHistory: res.settlementHistory,
+              serverTs: Date.now(),
+            })
+          );
+          broadcast({
+            type: 'booking_carriage_occupants_updated',
+            sceneMode,
+            carriageId: res.carriageId,
+            carriageNumber: res.carriageNumber,
+            tableIndex: res.tableIndex,
+            seat: res.seat,
+            seatOccupants: res.seatOccupants,
+          });
+          return;
+        }
+
+        if (msg.type === 'booking_advance_carriage') {
+          const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+          const userId = msg.playerId || msg.userId || 'guest';
+          const res = await advanceServerBookingCarriage({
+            sceneMode,
+            userId,
+            playerName: msg.playerName || '茶客',
+            avatar: msg.avatar || '👑',
+            createFresh: Boolean(msg.createFresh),
+          });
+          ws.send(
+            JSON.stringify({
+              type: 'booking_carriage_advanced',
+              sceneMode,
+              carriage: res.carriage,
+              archivedCarriages: res.archivedCarriages,
+              serverTs: Date.now(),
+            })
+          );
+          if (res.releasedSeatInfo) {
+            broadcast({
+              type: 'booking_carriage_occupants_updated',
+              sceneMode,
+              carriageId: res.releasedSeatInfo.carriageId,
+              carriageNumber: res.releasedSeatInfo.carriageNumber,
+              seatOccupants: res.releasedSeatInfo.seatOccupants,
             });
+          }
+          return;
+        }
+
+        if (msg.type === 'booking_simulate_settle') {
+          const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+          const userId = msg.playerId || msg.userId || 'guest';
+          const res = await simulateServerBookingSettlement({
+            sceneMode,
+            userId,
+            carriageId: msg.carriageId || undefined,
+            carriageNumber: msg.carriageNumber ? Number(msg.carriageNumber) : undefined,
+          });
+          if (!res.ok) {
+            ws.send(
+              JSON.stringify({
+                type: 'booking_error',
+                action: 'simulate_settle',
+                error: res.error,
+                serverTs: Date.now(),
+              })
+            );
+            return;
+          }
+          ws.send(
+            JSON.stringify({
+              type: 'booking_simulation_result',
+              sceneMode,
+              record: res.record,
+              carriage: res.carriage,
+              archivedCarriages: res.archivedCarriages,
+              serverTs: Date.now(),
+            })
+          );
+          return;
+        }
+
+        if (msg.type === 'booking_settle_0600') {
+          const userId = msg.playerId || msg.userId;
+          const notifications = await runServer0600SettlementSweep({
+            onlyUserId: userId || undefined,
+            forceIncludeGraceForUserId: msg.forceIncludeGrace ? userId : undefined,
+          });
+          if (notifications.length > 0) {
+            emitBookingSettlementNotifications(notifications);
+          }
+          if (userId) {
+            const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+            const refreshed = await getServerBookingState({
+              sceneMode,
+              userId,
+              requestedCarriageId: msg.carriageId || undefined,
+              requestedCarriageNumber: msg.carriageNumber ? Number(msg.carriageNumber) : undefined,
+            });
+            ws.send(
+              JSON.stringify({
+                type: 'booking_carriage_state',
+                sceneMode,
+                carriage: refreshed.carriage,
+                archivedCarriages: refreshed.archivedCarriages,
+                settlementHistory: refreshed.settlementHistory,
+                unreadSettlements: refreshed.unreadSettlements,
+                serverTs: Date.now(),
+              })
+            );
+          }
+          return;
+        }
+
+        if (msg.type === 'booking_ack_settlement') {
+          const userId = msg.playerId || msg.userId;
+          if (userId) {
+            await ackServerUnreadSettlements(userId);
           }
           return;
         }
@@ -3881,6 +4075,59 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
       }
     }
   }, 1000);
+
+  function emitBookingSettlementNotifications(notifications: SettledUserNotification[]) {
+    for (const item of notifications) {
+      broadcast({
+        type: 'user_coins_updated',
+        userId: item.userId,
+        coins: item.coins,
+        delta: item.delta,
+        rating: item.rating,
+        level: item.level,
+        source: 'booking_0600_settlement',
+        sceneMode: item.record.sceneMode,
+        carriageNumber: item.record.carriageNumber,
+        settledTablesCount: item.record.settledTablesCount,
+      });
+      broadcast({
+        type: 'booking_0600_settled',
+        userId: item.userId,
+        sceneMode: item.record.sceneMode,
+        record: item.record,
+        coins: item.coins,
+        delta: item.delta,
+      });
+    }
+  }
+
+  // 启动时立即检查并预先发满 50 节车厢手牌库存（库存不足 10 节自动补满 50 节）
+  initServerBookingInventory()
+    .then((info) => {
+      console.log(
+        `[ServerBooking] 十三张预约场预发牌库已就绪: 四人场 ${info.fourBookingStock} 节 / 八人场 ${info.eightBookingStock} 节`
+      );
+    })
+    .catch((err) => {
+      console.warn('[ServerBooking] 预发牌库初始化失败:', err);
+    });
+
+  // 十三张预约场每日 06:00 自动比水结算后台调度器（每30秒巡检，覆盖跨日/离线玩家）
+  setTimeout(() => {
+    runServer0600SettlementSweep()
+      .then((list) => {
+        if (list.length > 0) emitBookingSettlementNotifications(list);
+      })
+      .catch(() => {});
+  }, 5000);
+
+  setInterval(() => {
+    runServer0600SettlementSweep()
+      .then((list) => {
+        if (list.length > 0) emitBookingSettlementNotifications(list);
+      })
+      .catch(() => {});
+  }, 30000);
 
   // Periodic room garbage collection
   setInterval(() => {

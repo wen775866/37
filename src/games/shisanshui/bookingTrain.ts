@@ -1,6 +1,7 @@
 /**
  * 水镜十三水 / 十三张 (Shisanshui) 预约专列车厢推演引擎
  */
+import crypto from 'crypto';
 import { ServerBookingCarriage, ServerBookingTable } from './types.ts';
 
 export * from '../../engine/shisanshuiBookingTrain.ts';
@@ -36,7 +37,7 @@ export function generateServerShuffledDeck(deckCount: number, seedStr: string): 
     }
   }
   for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = crypto.randomInt(0, i + 1);
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   return pool;

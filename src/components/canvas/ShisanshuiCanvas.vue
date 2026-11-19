@@ -80,14 +80,11 @@
         </div>
       </div>
 
-      <!-- 十三张理牌思考倒计时 (语音聊天按钮风格胶囊 Capsule 悬浮指示器) -->
+      <!-- 十三张理牌思考倒计时 (实时场生效；预约场使用顶部06:00结算与延时理牌横幅) -->
       <div
-        v-if="!hasCompared && (!isBookingScene || !mySpecialHand)"
-        class="absolute left-1/2 transform -translate-x-1/2 z-30 px-3 py-1 rounded-full bg-gradient-to-r from-red-950/90 via-red-900/95 to-amber-950/90 border border-red-500/80 shadow-[0_4px_16px_rgba(239,68,68,0.45)] backdrop-blur-md text-red-200 flex items-center gap-1.5 font-mono font-bold text-xs sm:text-sm tabular-nums select-none pointer-events-none transition-all"
-        :class="[
-          isBookingScene ? 'top-14 sm:top-12' : 'top-2.5 sm:top-3.5',
-          { 'animate-pulse ring-2 ring-red-400 border-red-400': arrangeCountdown <= 10 }
-        ]"
+        v-if="!hasCompared && !isBookingScene"
+        class="absolute left-1/2 transform -translate-x-1/2 z-30 px-3 py-1 rounded-full bg-gradient-to-r from-red-950/90 via-red-900/95 to-amber-950/90 border border-red-500/80 shadow-[0_4px_16px_rgba(239,68,68,0.45)] backdrop-blur-md text-red-200 flex items-center gap-1.5 font-mono font-bold text-xs sm:text-sm tabular-nums select-none pointer-events-none transition-all top-2.5 sm:top-3.5"
+        :class="{ 'animate-pulse ring-2 ring-red-400 border-red-400': arrangeCountdown <= 10 }"
         title="思考理牌时间上限60秒"
       >
         <span class="w-2 h-2 rounded-full bg-red-400 animate-ping"></span>
@@ -112,7 +109,7 @@
           @click="showSpecialHandModal = true"
           class="ml-1 px-2.5 py-0.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-black font-black text-[11px] shadow transition-all active:scale-95 cursor-pointer"
         >
-          查看 / 直接开牌
+          {{ isBookingScene ? '查看 / 封牌提交' : '查看 / 直接开牌' }}
         </button>
       </div>
 
@@ -303,7 +300,7 @@
               @click="confirmSpecialHandShowdown"
               class="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-500 hover:from-amber-400 hover:to-yellow-400 text-black font-black text-xs sm:text-sm shadow-xl ring-2 ring-amber-300 transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
             >
-              <span>⚡ 特殊牌直接开牌 (+{{ mySpecialHand.bonusWater }}水)</span>
+              <span>⚡ {{ isBookingScene ? '特殊牌直接封牌提交' : '特殊牌直接开牌' }} (+{{ mySpecialHand.bonusWater }}水)</span>
             </button>
             <button
               type="button"
@@ -603,11 +600,17 @@
         :countdown-text="bookingCountdownText"
         :formatted-target-time="bookingTargetTime"
         :settlement-record="bookingSettlementRecord"
+        :archived-carriages="archivedBookingCarriages"
+        :settlement-history="bookingSettlementHistory"
+        :is-syncing="isBookingSyncing"
+        :current-user-id="props.currentUser?.id || 'guest'"
         @close="showBookingModal = false"
         @select-seat="onBookingSelectSeat"
         @next-table="onBookingNextTable"
+        @pick-table="onBookingPickTable"
         @open-overview="openCarriageOverview"
-        @advance-carriage="onBookingAdvanceCarriage"
+        @advance-carriage="onBookingAdvanceCarriage(false)"
+        @new-carriage="onBookingAdvanceCarriage(true)"
         @simulate-settle="onBookingSimulateSettle"
         @open-poster="emit('open-poster', $event)"
         @exit="emit('exit')"
@@ -640,8 +643,10 @@ import {
   TierMatchDetail,
   autoArrangeThirteen,
 } from '../../engine/shisanshuiRules';
+import { apiFetch } from '../../utils/networkConfig';
 import ShisanshuiBookingTrainModal from './ShisanshuiBookingTrainModal.vue';
 import {
+  setActiveBookingScope,
   getCurrentCarriage,
   selectCarriageSeat,
   pickNextRandomTable,
@@ -650,6 +655,8 @@ import {
   calculateNext0600Countdown,
   settleCarriageTables,
   checkAndAutoSettle0600,
+  getAllCarriages,
+  getBookingSettlementHistory,
   BookingCarriageState,
   BookingTableState,
   BookingSettlementRecord,
@@ -755,6 +762,12 @@ watch(() => props.tableTheme, () => {
 
 watch(() => props.sceneMode, () => {
   dealNewMatch();
+});
+
+watch(() => props.currentUser?.id, (newId, oldId) => {
+  if (newId !== oldId && isBookingScene.value) {
+    initBookingTrainMode();
+  }
 });
 
 watch(() => props.initialDeal, (deal) => {
@@ -881,7 +894,11 @@ function confirmSpecialHandShowdown() {
   if (!isSetComplete.value) {
     applyStrategy('optimal', false);
   }
-  handleCompare();
+  if (isBookingScene.value) {
+    handleBookingSubmit();
+  } else {
+    handleCompare();
+  }
 }
 
 const frontTierLabel = ref('乌龙');
@@ -1234,11 +1251,15 @@ function partitionHandLegally(cards13: Card[], strat: 'optimal' | 'solid' | 'flu
 const showBookingModal = ref(false);
 const bookingModalType = ref<'select-seat' | 'submission-success' | 'carriage-overview' | 'settlement-result'>('select-seat');
 const bookingCarriage = ref<BookingCarriageState | null>(null);
+const archivedBookingCarriages = ref<BookingCarriageState[]>([]);
+const bookingSettlementHistory = ref<BookingSettlementRecord[]>([]);
 const currentActiveBookingTable = ref<BookingTableState | null>(null);
 const bookingSubmittedTable = ref<BookingTableState | null>(null);
 const bookingSettlementRecord = ref<BookingSettlementRecord | null>(null);
 const bookingCountdownText = ref('');
 const bookingTargetTime = ref('');
+const isBookingSyncing = ref(false);
+let bookingSyncSafetyTimer: any = null;
 let bookingTimer: any = null;
 
 // 06:00 每日结算延时理牌逻辑 refs
@@ -1246,6 +1267,206 @@ const gracePeriodActive = ref(false);
 const gracePeriodSeconds = ref(0);
 let graceTimer: any = null;
 const hasHandled0600Today = ref(false);
+let lastCountdownCycleKey = '';
+
+const isOnlineBooking = computed(() => isBookingScene.value && !props.isPracticeMode);
+
+function getBookingMode(): 'four-booking' | 'eight-booking' {
+  return props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+}
+
+function getBookingPlayerIdentity() {
+  return {
+    playerId: props.currentUser?.id || 'guest',
+    playerName: props.currentUser?.name || '茶客',
+    avatar: props.currentUser?.avatar || '👑',
+  };
+}
+
+function startBookingSyncLock() {
+  isBookingSyncing.value = true;
+  if (bookingSyncSafetyTimer) clearTimeout(bookingSyncSafetyTimer);
+  bookingSyncSafetyTimer = setTimeout(() => {
+    isBookingSyncing.value = false;
+  }, 6000);
+}
+
+function stopBookingSyncLock() {
+  if (bookingSyncSafetyTimer) {
+    clearTimeout(bookingSyncSafetyTimer);
+    bookingSyncSafetyTimer = null;
+  }
+  isBookingSyncing.value = false;
+}
+
+function syncLocalBookingArchives(mode: 'four-booking' | 'eight-booking') {
+  archivedBookingCarriages.value = getAllCarriages(mode).filter(
+    (c) => c.carriageNumber !== bookingCarriage.value?.carriageNumber || c.isCompleted
+  );
+  bookingSettlementHistory.value = getBookingSettlementHistory();
+}
+
+function sendBookingWs(payload: Record<string, any>): boolean {
+  if (!props.ws || props.ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    props.ws.send(JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function acknowledgeServerBookingSettlement() {
+  if (!isOnlineBooking.value) return;
+  const id = getBookingPlayerIdentity();
+  const sent = sendBookingWs({
+    type: 'booking_ack_settlement',
+    playerId: id.playerId,
+    userId: id.playerId,
+  });
+  if (!sent) {
+    try {
+      await apiFetch('/api/booking/ack-settlement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerId: id.playerId, userId: id.playerId }),
+      });
+    } catch {}
+  }
+}
+
+function applyServerBookingState(
+  carriage: BookingCarriageState | null,
+  archived?: BookingCarriageState[],
+  history?: BookingSettlementRecord[],
+  unread?: BookingSettlementRecord[],
+  options: { openSelectSeatIfEmpty?: boolean; preserveExistingTable?: boolean } = {}
+) {
+  if (carriage && carriage.sceneMode && carriage.sceneMode !== getBookingMode()) {
+    return;
+  }
+
+  const prevCarriage = bookingCarriage.value;
+  if (archived !== undefined) {
+    archivedBookingCarriages.value = archived;
+  }
+  if (history !== undefined) {
+    bookingSettlementHistory.value = history;
+  }
+  if (carriage) {
+    bookingCarriage.value = carriage;
+  }
+
+  if (unread && unread.length > 0) {
+    bookingSettlementRecord.value = unread[0];
+    bookingModalType.value = 'settlement-result';
+    showBookingModal.value = true;
+    showToast('🌅 每日 06:00 预约场晨间战报已自动生成并入账！');
+    acknowledgeServerBookingSettlement();
+  }
+
+  if (!carriage) return;
+
+  if (!carriage.selectedSeat) {
+    currentActiveBookingTable.value = null;
+    if (options.openSelectSeatIfEmpty !== false && !(unread && unread.length > 0)) {
+      bookingModalType.value = 'select-seat';
+      showBookingModal.value = true;
+    }
+    return;
+  }
+
+  if (carriage.currentActiveTableIndex) {
+    const tbl = carriage.tables.find((t) => t.tableIndex === carriage.currentActiveTableIndex);
+    if (tbl && !tbl.isSubmitted) {
+      const sameCarriage = Boolean(
+        currentActiveBookingTable.value &&
+        prevCarriage &&
+        (prevCarriage.carriageId && carriage.carriageId
+          ? prevCarriage.carriageId === carriage.carriageId
+          : prevCarriage.carriageNumber === carriage.carriageNumber)
+      );
+      const sameTable = currentActiveBookingTable.value?.tableIndex === tbl.tableIndex && fullHand.value.length === 13;
+      if (options.preserveExistingTable && sameCarriage && sameTable) {
+        currentActiveBookingTable.value = tbl;
+      } else {
+        loadBookingTableCards(tbl);
+      }
+      return;
+    }
+  }
+
+  if (carriage.isCompleted) {
+    currentActiveBookingTable.value = null;
+    if (!showBookingModal.value) {
+      bookingModalType.value = 'carriage-overview';
+      showBookingModal.value = true;
+    }
+    return;
+  }
+
+  // 有坐席但无当前进行中牌桌且未完结：自动分配下一桌
+  if (carriage.unplayedTableIndices.length > 0 && !currentActiveBookingTable.value) {
+    onBookingNextTable();
+  }
+}
+
+async function fetchServerBookingState(
+  requestedCarriageNumber?: number,
+  preserveExistingTable = true,
+  requestedCarriageId?: string
+) {
+  if (!isOnlineBooking.value) return;
+  const mode = getBookingMode();
+  const id = getBookingPlayerIdentity();
+  const targetCarriageId =
+    requestedCarriageId ??
+    (requestedCarriageNumber === undefined ? bookingCarriage.value?.carriageId : undefined);
+  startBookingSyncLock();
+
+  const sent = sendBookingWs({
+    type: 'booking_get_carriage',
+    sceneMode: mode,
+    playerId: id.playerId,
+    userId: id.playerId,
+    playerName: id.playerName,
+    avatar: id.avatar,
+    carriageId: targetCarriageId,
+    carriageNumber: requestedCarriageNumber,
+  });
+
+  if (sent) return;
+
+  try {
+    const params = new URLSearchParams({
+      sceneMode: mode,
+      playerId: id.playerId,
+      playerName: id.playerName,
+      avatar: id.avatar,
+    });
+    if (targetCarriageId) {
+      params.set('carriageId', targetCarriageId);
+    }
+    if (requestedCarriageNumber) {
+      params.set('carriageNumber', String(requestedCarriageNumber));
+    }
+    const resp = await apiFetch(`/api/booking/carriage?${params.toString()}`);
+    const data = await resp.json();
+    if (data?.carriage) {
+      applyServerBookingState(
+        data.carriage,
+        data.archivedCarriages,
+        data.settlementHistory,
+        data.unreadSettlements,
+        { openSelectSeatIfEmpty: true, preserveExistingTable }
+      );
+    }
+  } catch (err) {
+    console.warn('[BookingHTTP] 获取车厢状态失败:', err);
+  } finally {
+    stopBookingSyncLock();
+  }
+}
 
 const isBookingTableSubmitted = computed(() => {
   return !!currentActiveBookingTable.value?.isSubmitted;
@@ -1274,13 +1495,19 @@ function updateBookingCountdown() {
 
   if (!isBookingScene.value) return;
 
-  // 06:00 到达判定：倒计时刚好为 0 或 23:59:59 (跨日瞬间)，或者当前时间在 06:00:00 - 06:02:00 且今天尚未触发过 06:00 结算流程
   const now = new Date();
+  const cycleKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  if (lastCountdownCycleKey && lastCountdownCycleKey !== cycleKey) {
+    hasHandled0600Today.value = false;
+  }
+  lastCountdownCycleKey = cycleKey;
+
+  // 06:00 到达判定：倒计时刚好为 0 或当前时间在 06:00:00 - 06:00:59 且今天尚未触发过 06:00 结算流程
   const isExactly0600 = cd.hours === 0 && cd.minutes === 0 && cd.seconds === 0;
   const is0600Window = now.getHours() === 6 && now.getMinutes() === 0;
 
   if ((isExactly0600 || is0600Window) && !hasHandled0600Today.value) {
-    const isArranging = currentActiveBookingTable.value && !currentActiveBookingTable.value.isSubmitted;
+    const isArranging = currentActiveBookingTable.value && !currentActiveBookingTable.value.isSubmitted && fullHand.value.length === 13;
 
     if (isArranging) {
       if (!gracePeriodActive.value) {
@@ -1288,15 +1515,42 @@ function updateBookingCountdown() {
       }
     } else {
       hasHandled0600Today.value = true;
-      const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-      const autoRec = checkAndAutoSettle0600(mode);
-      if (autoRec) {
-        bookingSettlementRecord.value = autoRec;
-        bookingModalType.value = 'settlement-result';
-        showBookingModal.value = true;
-        showToast('🌅 每日 06:00 预约场晨间战报已自动生成公布！');
-      }
+      trigger0600SettlementCheck(false);
     }
+  }
+}
+
+async function trigger0600SettlementCheck(forceIncludeGrace = false) {
+  const mode = getBookingMode();
+  if (isOnlineBooking.value) {
+    const id = getBookingPlayerIdentity();
+    const sent = sendBookingWs({
+      type: 'booking_settle_0600',
+      sceneMode: mode,
+      playerId: id.playerId,
+      userId: id.playerId,
+      carriageId: bookingCarriage.value?.carriageId,
+      carriageNumber: bookingCarriage.value?.carriageNumber,
+      forceIncludeGrace,
+    });
+    if (!sent) {
+      await fetchServerBookingState(
+        bookingCarriage.value?.carriageNumber,
+        true,
+        bookingCarriage.value?.carriageId
+      );
+    }
+    return;
+  }
+
+  const autoRec = checkAndAutoSettle0600(mode);
+  bookingCarriage.value = getCurrentCarriage(mode);
+  syncLocalBookingArchives(mode);
+  if (autoRec) {
+    bookingSettlementRecord.value = autoRec;
+    bookingModalType.value = 'settlement-result';
+    showBookingModal.value = true;
+    showToast('🌅 每日 06:00 预约场晨间战报已自动生成公布！');
   }
 }
 
@@ -1313,7 +1567,7 @@ function start0600GracePeriod() {
   } catch {}
 
   if (graceTimer) clearInterval(graceTimer);
-  graceTimer = setInterval(() => {
+  graceTimer = setInterval(async () => {
     gracePeriodSeconds.value--;
     if (gracePeriodSeconds.value <= 0) {
       clearInterval(graceTimer);
@@ -1323,36 +1577,47 @@ function start0600GracePeriod() {
       // 超时自动智能最优理牌并提交
       showToast('⌛ 延时 1 分钟理牌已截止，系统已自动智能最优理牌并封盘结算！');
       applyStrategy('optimal', false);
-
-      const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-      const handTiers: SubmittedHandTiers = {
-        front: [...frontTier.value],
-        mid: [...midTier.value],
-        back: [...backTier.value],
-        frontLabel: frontTierLabel.value,
-        midLabel: midTierLabel.value,
-        backLabel: backTierLabel.value,
-        specialHand: mySpecialHand.value,
-      };
-
-      const res = submitCurrentTableHand(mode, handTiers);
-      bookingCarriage.value = res.carriage;
-      bookingSubmittedTable.value = res.submittedTable;
-
-      const autoRec = checkAndAutoSettle0600(mode);
-      if (autoRec) {
-        bookingSettlementRecord.value = autoRec;
-        bookingModalType.value = 'settlement-result';
-        showBookingModal.value = true;
-      }
+      await submitBookingHandInternal(true);
     }
   }, 1000);
 }
 
 function initBookingTrainMode() {
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+  const mode = getBookingMode();
+  setActiveBookingScope(props.currentUser?.id, Boolean(props.isPracticeMode));
 
-  // 自动检查 06:00 晨间比水结算触发条件
+  // 彻底清理上一场次/模式/账号的响应式残留，防止切换4人/8人或切换账号时出现状态串台
+  if (graceTimer) {
+    clearInterval(graceTimer);
+    graceTimer = null;
+  }
+  gracePeriodActive.value = false;
+  gracePeriodSeconds.value = 0;
+  hasHandled0600Today.value = false;
+  lastCountdownCycleKey = '';
+  bookingCarriage.value = null;
+  currentActiveBookingTable.value = null;
+  bookingSubmittedTable.value = null;
+  archivedBookingCarriages.value = [];
+  bookingSettlementHistory.value = [];
+  bookingSettlementRecord.value = null;
+  showBookingModal.value = false;
+  fullHand.value = [];
+  frontTier.value = [];
+  midTier.value = [];
+  backTier.value = [];
+  stopBookingSyncLock();
+
+  updateBookingCountdown();
+  if (bookingTimer) clearInterval(bookingTimer);
+  bookingTimer = setInterval(updateBookingCountdown, 1000);
+
+  if (isOnlineBooking.value) {
+    fetchServerBookingState(undefined, false, undefined);
+    return;
+  }
+
+  // 练习模式走本地隔离存储
   const autoRec = checkAndAutoSettle0600(mode);
   if (autoRec) {
     bookingSettlementRecord.value = autoRec;
@@ -1363,10 +1628,7 @@ function initBookingTrainMode() {
 
   const carriage = getCurrentCarriage(mode);
   bookingCarriage.value = carriage;
-
-  updateBookingCountdown();
-  if (bookingTimer) clearInterval(bookingTimer);
-  bookingTimer = setInterval(updateBookingCountdown, 1000);
+  syncLocalBookingArchives(mode);
 
   if (!carriage.selectedSeat) {
     bookingModalType.value = 'select-seat';
@@ -1374,7 +1636,7 @@ function initBookingTrainMode() {
   } else {
     if (carriage.currentActiveTableIndex) {
       const tbl = carriage.tables.find((t) => t.tableIndex === carriage.currentActiveTableIndex);
-      if (tbl) {
+      if (tbl && !tbl.isSubmitted) {
         loadBookingTableCards(tbl);
         return;
       }
@@ -1385,15 +1647,17 @@ function initBookingTrainMode() {
 
 function loadBookingTableCards(table: BookingTableState) {
   currentActiveBookingTable.value = table;
-  const mySeat = table.playerSeat || bookingCarriage.value?.selectedSeat || '东';
-  const myCards = table.seatCards[mySeat] || [];
+  const mySeatLabel = table.playerSeat || bookingCarriage.value?.selectedSeat || '东';
+  const myCards = table.seatCards?.[mySeatLabel] || [];
 
   if (myCards.length === 13) {
     fullHand.value = [...myCards];
     frontTier.value = [];
     midTier.value = [];
     backTier.value = [];
-    hasCompared.value = table.isSubmitted;
+    // 预约场绝不激活实时比水全场弹窗
+    hasCompared.value = false;
+    isWaitingShowdown.value = false;
     selectedIds.value.clear();
     historyStack.value = [];
     applyStrategy('optimal', false, myCards);
@@ -1401,10 +1665,61 @@ function loadBookingTableCards(table: BookingTableState) {
   }
 }
 
-function onBookingSelectSeat(seat: BookingSeat) {
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+async function onBookingSelectSeat(seat: BookingSeat) {
+  const mode = getBookingMode();
+  if (isOnlineBooking.value) {
+    const id = getBookingPlayerIdentity();
+    startBookingSyncLock();
+    const sent = sendBookingWs({
+      type: 'booking_select_seat',
+      sceneMode: mode,
+      playerId: id.playerId,
+      userId: id.playerId,
+      playerName: id.playerName,
+      avatar: id.avatar,
+      seat,
+      carriageId: bookingCarriage.value?.carriageId,
+      carriageNumber: bookingCarriage.value?.carriageNumber,
+    });
+    if (sent) return;
+
+    try {
+      const resp = await apiFetch('/api/booking/select-seat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sceneMode: mode,
+          playerId: id.playerId,
+          playerName: id.playerName,
+          avatar: id.avatar,
+          seat,
+          carriageId: bookingCarriage.value?.carriageId,
+          carriageNumber: bookingCarriage.value?.carriageNumber,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.success) {
+        showToast(`⚠️ ${data?.error || '选座失败，该席位可能已被他人占用'}`);
+        if (data?.carriage) bookingCarriage.value = data.carriage;
+        return;
+      }
+      showBookingModal.value = false;
+      applyServerBookingState(data.carriage, data.archivedCarriages, undefined, undefined, { openSelectSeatIfEmpty: false });
+      const activeTbl = data.carriage?.tables?.find((t: BookingTableState) => t.tableIndex === data.carriage?.currentActiveTableIndex);
+      if (activeTbl) {
+        showToast(`🚂 已入座第 ${data.carriage.carriageNumber} 车厢【${seat}位】并分配该方位预发手牌！先开启第 ${activeTbl.tableIndex} 桌理牌`);
+      }
+    } catch {
+      showToast('⚠️ 网络繁忙，选座请求未完成');
+    } finally {
+      stopBookingSyncLock();
+    }
+    return;
+  }
+
   const res = selectCarriageSeat(mode, seat);
   bookingCarriage.value = res.carriage;
+  syncLocalBookingArchives(mode);
   showBookingModal.value = false;
   if (res.activeTable) {
     loadBookingTableCards(res.activeTable);
@@ -1412,15 +1727,63 @@ function onBookingSelectSeat(seat: BookingSeat) {
   }
 }
 
-function onBookingNextTable() {
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-  const res = pickNextRandomTable(mode);
+async function pickBookingTableInternal(specificTableIndex?: number) {
+  const mode = getBookingMode();
+  if (isOnlineBooking.value) {
+    const id = getBookingPlayerIdentity();
+    startBookingSyncLock();
+    const sent = sendBookingWs({
+      type: 'booking_pick_table',
+      sceneMode: mode,
+      playerId: id.playerId,
+      userId: id.playerId,
+      carriageId: bookingCarriage.value?.carriageId,
+      carriageNumber: bookingCarriage.value?.carriageNumber,
+      tableIndex: specificTableIndex,
+    });
+    if (sent) return;
+
+    try {
+      const resp = await apiFetch('/api/booking/pick-table', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sceneMode: mode,
+          playerId: id.playerId,
+          carriageId: bookingCarriage.value?.carriageId,
+          carriageNumber: bookingCarriage.value?.carriageNumber,
+          tableIndex: specificTableIndex,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.success) {
+        showToast(`⚠️ ${data?.error || '分配牌桌失败'}`);
+        return;
+      }
+      showBookingModal.value = false;
+      applyServerBookingState(data.carriage, data.archivedCarriages, undefined, undefined, { openSelectSeatIfEmpty: true });
+      if (data.activeTable) {
+        showToast(`🎲 已进入第 ${data.activeTable.tableIndex} 桌【${data.carriage?.selectedSeat || '东'}位】开始理牌`);
+      } else if (data.carriage?.isCompleted) {
+        bookingModalType.value = 'carriage-overview';
+        showBookingModal.value = true;
+      }
+    } catch {
+      showToast('⚠️ 网络繁忙，分配牌桌失败');
+    } finally {
+      stopBookingSyncLock();
+    }
+    return;
+  }
+
+  const res = pickNextRandomTable(mode, specificTableIndex);
   bookingCarriage.value = res.carriage;
+  syncLocalBookingArchives(mode);
   showBookingModal.value = false;
 
   if (res.activeTable) {
     loadBookingTableCards(res.activeTable);
-    showToast(`🎲 随机抽选第 ${res.activeTable.tableIndex} 桌【${bookingCarriage.value?.selectedSeat || '东'}位】手牌为您理牌出战`);
+    showToast(`🎲 已分配第 ${res.activeTable.tableIndex} 桌【${bookingCarriage.value?.selectedSeat || '东'}位】手牌为您理牌出战`);
   } else if (res.carriage.isCompleted) {
     bookingModalType.value = 'carriage-overview';
     showBookingModal.value = true;
@@ -1428,7 +1791,15 @@ function onBookingNextTable() {
   }
 }
 
-function handleBookingSubmit() {
+function onBookingNextTable() {
+  pickBookingTableInternal();
+}
+
+function onBookingPickTable(tableIndex: number) {
+  pickBookingTableInternal(tableIndex);
+}
+
+async function submitBookingHandInternal(isGraceAutoSubmit = false) {
   if (!currentActiveBookingTable.value) return;
 
   if (frontTier.value.length !== 3 || midTier.value.length !== 5 || backTier.value.length !== 5) {
@@ -1447,8 +1818,7 @@ function handleBookingSubmit() {
     return;
   }
 
-  // 若处于 06:00 延时理牌阶段，清除延时定时器并立即进行结算
-  const wasGraceActive = gracePeriodActive.value;
+  const wasGraceActive = isGraceAutoSubmit || gracePeriodActive.value;
   if (gracePeriodActive.value) {
     if (graceTimer) clearInterval(graceTimer);
     graceTimer = null;
@@ -1456,7 +1826,7 @@ function handleBookingSubmit() {
     gracePeriodSeconds.value = 0;
   }
 
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+  const mode = getBookingMode();
   const handTiers: SubmittedHandTiers = {
     front: [...frontTier.value],
     mid: [...midTier.value],
@@ -1467,15 +1837,67 @@ function handleBookingSubmit() {
     specialHand: mySpecialHand.value,
   };
 
+  if (isOnlineBooking.value) {
+    const id = getBookingPlayerIdentity();
+    startBookingSyncLock();
+    const payload = {
+      type: 'booking_submit_hand',
+      sceneMode: mode,
+      playerId: id.playerId,
+      userId: id.playerId,
+      playerName: id.playerName,
+      avatar: id.avatar,
+      carriageId: bookingCarriage.value?.carriageId,
+      carriageNumber: bookingCarriage.value?.carriageNumber,
+      tableIndex: currentActiveBookingTable.value.tableIndex,
+      playerSeat: currentActiveBookingTable.value.playerSeat || bookingCarriage.value?.selectedSeat,
+      playerHand: handTiers,
+      isGraceSubmission: wasGraceActive,
+    };
+
+    const sent = sendBookingWs(payload);
+    if (sent) return;
+
+    try {
+      const resp = await apiFetch('/api/booking/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.success) {
+        showToast(`⚠️ ${data?.error || '封牌提交校验失败，请检查手牌后再试'}`);
+        return;
+      }
+      bookingCarriage.value = data.carriage;
+      bookingSubmittedTable.value = data.submittedTable;
+      if (data.archivedCarriages) archivedBookingCarriages.value = data.archivedCarriages;
+      if (data.settlementHistory) bookingSettlementHistory.value = data.settlementHistory;
+      currentActiveBookingTable.value = data.submittedTable || currentActiveBookingTable.value;
+      soundFX.playVictory();
+      haptics.victory();
+      bookingModalType.value = 'submission-success';
+      showBookingModal.value = true;
+    } catch {
+      showToast('⚠️ 网络繁忙，封牌提交未成功，请重试');
+    } finally {
+      stopBookingSyncLock();
+    }
+    return;
+  }
+
   const res = submitCurrentTableHand(mode, handTiers);
   bookingCarriage.value = res.carriage;
   bookingSubmittedTable.value = res.submittedTable;
+  syncLocalBookingArchives(mode);
 
   soundFX.playVictory();
   haptics.victory();
 
   if (wasGraceActive) {
     const autoRec = checkAndAutoSettle0600(mode);
+    bookingCarriage.value = getCurrentCarriage(mode);
+    syncLocalBookingArchives(mode);
     if (autoRec) {
       bookingSettlementRecord.value = autoRec;
       bookingModalType.value = 'settlement-result';
@@ -1489,25 +1911,118 @@ function handleBookingSubmit() {
   showBookingModal.value = true;
 }
 
-function openCarriageOverview() {
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-  bookingCarriage.value = getCurrentCarriage(mode);
-  bookingModalType.value = 'carriage-overview';
-  showBookingModal.value = true;
+function handleBookingSubmit() {
+  submitBookingHandInternal(false);
 }
 
-function onBookingAdvanceCarriage() {
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+function openCarriageOverview() {
+  const mode = getBookingMode();
+  bookingModalType.value = 'carriage-overview';
+  showBookingModal.value = true;
+  if (isOnlineBooking.value) {
+    fetchServerBookingState(
+      bookingCarriage.value?.carriageNumber,
+      true,
+      bookingCarriage.value?.carriageId
+    );
+  } else {
+    bookingCarriage.value = getCurrentCarriage(mode);
+    syncLocalBookingArchives(mode);
+  }
+}
+
+async function onBookingAdvanceCarriage(createFresh = false) {
+  const mode = getBookingMode();
+  if (isOnlineBooking.value) {
+    const id = getBookingPlayerIdentity();
+    startBookingSyncLock();
+    const payload = {
+      type: 'booking_advance_carriage',
+      sceneMode: mode,
+      playerId: id.playerId,
+      userId: id.playerId,
+      playerName: id.playerName,
+      avatar: id.avatar,
+      createFresh,
+    };
+    const sent = sendBookingWs(payload);
+    if (sent) return;
+
+    try {
+      const resp = await apiFetch('/api/booking/advance-carriage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (data?.carriage) {
+        currentActiveBookingTable.value = null;
+        fullHand.value = [];
+        applyServerBookingState(data.carriage, data.archivedCarriages, undefined, undefined, { openSelectSeatIfEmpty: true });
+        bookingModalType.value = 'select-seat';
+        showBookingModal.value = true;
+        showToast(`🎉 已进入第 ${data.carriage.carriageNumber} 节车厢，请选定您的出战坐席！`);
+      }
+    } catch {
+      showToast('⚠️ 开启新车厢失败，请稍后重试');
+    } finally {
+      stopBookingSyncLock();
+    }
+    return;
+  }
+
   const newCarriage = advanceToNextCarriage(mode);
+  currentActiveBookingTable.value = null;
   bookingCarriage.value = newCarriage;
+  syncLocalBookingArchives(mode);
   bookingModalType.value = 'select-seat';
   showBookingModal.value = true;
   showToast(`🎉 轰隆隆！发车进入第 ${newCarriage.carriageNumber} 节车厢 (开启第 ${newCarriage.carriageNumber} 场次)`);
 }
 
-function onBookingSimulateSettle() {
-  const mode = props.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+async function onBookingSimulateSettle() {
+  const mode = getBookingMode();
+  if (isOnlineBooking.value) {
+    const id = getBookingPlayerIdentity();
+    startBookingSyncLock();
+    const payload = {
+      type: 'booking_simulate_settle',
+      sceneMode: mode,
+      playerId: id.playerId,
+      userId: id.playerId,
+      carriageId: bookingCarriage.value?.carriageId,
+      carriageNumber: bookingCarriage.value?.carriageNumber,
+    };
+    const sent = sendBookingWs(payload);
+    if (sent) return;
+
+    try {
+      const resp = await apiFetch('/api/booking/simulate-settle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data?.success) {
+        showToast(`⚠️ ${data?.error || '暂无已提交的牌桌可供模拟测算'}`);
+        return;
+      }
+      if (data.carriage) bookingCarriage.value = data.carriage;
+      if (data.archivedCarriages) archivedBookingCarriages.value = data.archivedCarriages;
+      bookingSettlementRecord.value = data.record;
+      bookingModalType.value = 'settlement-result';
+      showBookingModal.value = true;
+    } catch {
+      showToast('⚠️ 模拟比水测算请求失败');
+    } finally {
+      stopBookingSyncLock();
+    }
+    return;
+  }
+
   const record = settleCarriageTables(mode, bookingCarriage.value?.carriageNumber, true);
+  bookingCarriage.value = getCurrentCarriage(mode);
+  syncLocalBookingArchives(mode);
   bookingSettlementRecord.value = record;
   bookingModalType.value = 'settlement-result';
   showBookingModal.value = true;
@@ -1516,6 +2031,7 @@ function onBookingSimulateSettle() {
 const lastAppliedDealId = ref<string>('');
 
 function clearLocalSnapshot() {
+  if (isBookingScene.value) return;
   const roomId = props.roomId;
   if (!roomId) return;
   try {
@@ -1525,10 +2041,10 @@ function clearLocalSnapshot() {
 }
 
 function saveLocalSnapshot() {
-  if (props.isPracticeMode) return;
+  if (props.isPracticeMode || isBookingScene.value) return;
   const roomId = props.roomId;
   if (!roomId) return;
-  if (hasCompared.value || showSettlementModal.value) {
+  if (hasCompared.value) {
     clearLocalSnapshot();
     return;
   }
@@ -1542,11 +2058,8 @@ function saveLocalSnapshot() {
       frontTier: frontTier.value,
       midTier: midTier.value,
       backTier: backTier.value,
-      selectedSpecialHand: selectedSpecialHand.value,
-      isSpecialHandClaimed: isSpecialHandClaimed.value,
       isWaitingShowdown: isWaitingShowdown.value,
       submittedSeats: Array.from(submittedSeats.value),
-      bookingSubmittedTable: bookingSubmittedTable.value,
       timestamp: Date.now(),
     };
     const serialized = JSON.stringify(snap);
@@ -1556,7 +2069,7 @@ function saveLocalSnapshot() {
 }
 
 function tryRestoreLocalSnapshot(): boolean {
-  if (props.isPracticeMode) return false;
+  if (props.isPracticeMode || isBookingScene.value) return false;
   const roomId = props.roomId;
   if (!roomId) return false;
   try {
@@ -1579,14 +2092,9 @@ function tryRestoreLocalSnapshot(): boolean {
     frontTier.value = snap.frontTier || [];
     midTier.value = snap.midTier || [];
     backTier.value = snap.backTier || [];
-    selectedSpecialHand.value = snap.selectedSpecialHand || null;
-    isSpecialHandClaimed.value = Boolean(snap.isSpecialHandClaimed);
     isWaitingShowdown.value = Boolean(snap.isWaitingShowdown);
     if (Array.isArray(snap.submittedSeats)) {
       submittedSeats.value = new Set(snap.submittedSeats);
-    }
-    if (snap.bookingSubmittedTable) {
-      bookingSubmittedTable.value = snap.bookingSubmittedTable;
     }
 
     isDealingCeremony.value = false;
@@ -2908,6 +3416,148 @@ function onWsMessage(ev: MessageEvent) {
   if (props.isPracticeMode) return;
   try {
     const msg = JSON.parse(ev.data);
+
+    // 预约场专列服务器权威同步消息处理
+    if (typeof msg.type === 'string' && msg.type.startsWith('booking_')) {
+      const mode = getBookingMode();
+      if (msg.type === 'booking_error') {
+        stopBookingSyncLock();
+        showToast(`⚠️ ${msg.error || '操作未能完成'}`);
+        if (msg.carriage && msg.action === 'select_seat') {
+          bookingCarriage.value = msg.carriage;
+        }
+        return;
+      }
+
+      if (msg.type === 'booking_carriage_occupants_updated') {
+        const sameCohort = msg.carriageId && bookingCarriage.value?.carriageId
+          ? msg.carriageId === bookingCarriage.value.carriageId
+          : msg.carriageNumber === bookingCarriage.value?.carriageNumber;
+        if (
+          isOnlineBooking.value &&
+          msg.sceneMode === mode &&
+          bookingCarriage.value &&
+          sameCohort
+        ) {
+          bookingCarriage.value = {
+            ...bookingCarriage.value,
+            seatOccupants: msg.seatOccupants || bookingCarriage.value.seatOccupants,
+            tables: msg.tableIndex && msg.seat
+              ? bookingCarriage.value.tables.map((t) => {
+                  if (t.tableIndex !== msg.tableIndex) return t;
+                  const existing = new Set(t.realOpponentsSubmittedSeats || []);
+                  if (msg.seat !== bookingCarriage.value?.selectedSeat) {
+                    existing.add(msg.seat);
+                  }
+                  return { ...t, realOpponentsSubmittedSeats: Array.from(existing) };
+                })
+              : bookingCarriage.value.tables,
+          };
+        }
+        return;
+      }
+
+      if (msg.type === 'booking_0600_settled') {
+        if (msg.userId && props.currentUser?.id && msg.userId !== props.currentUser.id) return;
+        if (isOnlineBooking.value && msg.record) {
+          bookingSettlementRecord.value = msg.record;
+          bookingModalType.value = 'settlement-result';
+          showBookingModal.value = true;
+          soundFX.playVictory();
+          haptics.victory();
+          showToast('🌅 每日 06:00 预约场晨间结算已完成，筹码已发放至账户！');
+          acknowledgeServerBookingSettlement();
+          fetchServerBookingState(
+            bookingCarriage.value?.carriageNumber,
+            true,
+            bookingCarriage.value?.carriageId
+          );
+        }
+        return;
+      }
+
+      if (msg.sceneMode && msg.sceneMode !== mode) return;
+
+      if (msg.type === 'booking_carriage_state') {
+        stopBookingSyncLock();
+        applyServerBookingState(
+          msg.carriage,
+          msg.archivedCarriages,
+          msg.settlementHistory,
+          msg.unreadSettlements,
+          { openSelectSeatIfEmpty: true, preserveExistingTable: true }
+        );
+        return;
+      }
+
+      if (msg.type === 'booking_seat_selected') {
+        stopBookingSyncLock();
+        showBookingModal.value = false;
+        applyServerBookingState(msg.carriage, msg.archivedCarriages, undefined, undefined, {
+          openSelectSeatIfEmpty: false,
+          preserveExistingTable: false,
+        });
+        if (msg.carriage?.selectedSeat && msg.activeTableIndex) {
+          showToast(`🚂 已入座第 ${msg.carriage.carriageNumber} 车厢【${msg.carriage.selectedSeat}位】并分配该方位预发手牌！先开启第 ${msg.activeTableIndex} 桌理牌`);
+        }
+        return;
+      }
+
+      if (msg.type === 'booking_table_picked') {
+        stopBookingSyncLock();
+        showBookingModal.value = false;
+        applyServerBookingState(msg.carriage, msg.archivedCarriages, undefined, undefined, {
+          openSelectSeatIfEmpty: true,
+          preserveExistingTable: false,
+        });
+        if (msg.activeTableIndex) {
+          showToast(`🎲 已进入第 ${msg.activeTableIndex} 桌【${msg.carriage?.selectedSeat || '东'}位】手牌为您理牌`);
+        }
+        return;
+      }
+
+      if (msg.type === 'booking_submit_ack') {
+        stopBookingSyncLock();
+        bookingCarriage.value = msg.carriage;
+        bookingSubmittedTable.value = msg.submittedTable;
+        if (msg.archivedCarriages) archivedBookingCarriages.value = msg.archivedCarriages;
+        if (msg.settlementHistory) bookingSettlementHistory.value = msg.settlementHistory;
+        currentActiveBookingTable.value = msg.submittedTable || currentActiveBookingTable.value;
+        soundFX.playVictory();
+        haptics.victory();
+        bookingModalType.value = 'submission-success';
+        showBookingModal.value = true;
+        return;
+      }
+
+      if (msg.type === 'booking_carriage_advanced') {
+        stopBookingSyncLock();
+        currentActiveBookingTable.value = null;
+        fullHand.value = [];
+        applyServerBookingState(msg.carriage, msg.archivedCarriages, undefined, undefined, {
+          openSelectSeatIfEmpty: true,
+          preserveExistingTable: false,
+        });
+        if (msg.carriage && !msg.carriage.selectedSeat) {
+          bookingModalType.value = 'select-seat';
+          showBookingModal.value = true;
+        }
+        showToast(`🎉 已进入第 ${msg.carriage?.carriageNumber || 1} 节车厢！`);
+        return;
+      }
+
+      if (msg.type === 'booking_simulation_result') {
+        stopBookingSyncLock();
+        if (msg.carriage) bookingCarriage.value = msg.carriage;
+        if (msg.archivedCarriages) archivedBookingCarriages.value = msg.archivedCarriages;
+        bookingSettlementRecord.value = msg.record;
+        bookingModalType.value = 'settlement-result';
+        showBookingModal.value = true;
+        return;
+      }
+      return;
+    }
+
     if (msg.roomId && props.roomId && msg.roomId !== props.roomId) return;
     if (msg.type === 'scene_reconnect_ack') {
       handleReconnectSync(msg);
@@ -2966,19 +3616,38 @@ function onWsMessage(ev: MessageEvent) {
   } catch {}
 }
 
+function onBookingWsOpen() {
+  if (isOnlineBooking.value) {
+    fetchServerBookingState(
+      bookingCarriage.value?.carriageNumber,
+      true,
+      bookingCarriage.value?.carriageId
+    );
+  }
+}
+
 watch(() => props.ws, (newWs, oldWs) => {
   if (oldWs) {
-    try { oldWs.removeEventListener('message', onWsMessage); } catch {}
+    try {
+      oldWs.removeEventListener('message', onWsMessage);
+      oldWs.removeEventListener('open', onBookingWsOpen);
+    } catch {}
   }
   if (newWs) {
     try {
       newWs.removeEventListener('message', onWsMessage);
       newWs.addEventListener('message', onWsMessage);
+      newWs.removeEventListener('open', onBookingWsOpen);
+      newWs.addEventListener('open', onBookingWsOpen);
+      if (newWs.readyState === WebSocket.OPEN && isOnlineBooking.value && !bookingCarriage.value) {
+        fetchServerBookingState(undefined, true);
+      }
     } catch {}
   }
 });
 
 onMounted(() => {
+  setActiveBookingScope(props.currentUser?.id, Boolean(props.isPracticeMode));
   cleanupCardLoader = onCardAssetsLoaded(() => {
     nextTick(() => drawBoard());
   });
@@ -2990,6 +3659,7 @@ onMounted(() => {
   }
   if (props.ws) {
     props.ws.addEventListener('message', onWsMessage);
+    props.ws.addEventListener('open', onBookingWsOpen);
   }
   window.addEventListener('resize', updateDimensions);
   if (containerRef.value && typeof ResizeObserver !== 'undefined') {
@@ -3002,12 +3672,14 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (cleanupCardLoader) cleanupCardLoader();
+  if (bookingSyncSafetyTimer) clearTimeout(bookingSyncSafetyTimer);
   if (bookingTimer) clearInterval(bookingTimer);
   if (graceTimer) clearInterval(graceTimer);
   if (arrangeTimer) clearInterval(arrangeTimer);
   if (toastTimer) clearTimeout(toastTimer);
   if (props.ws) {
     props.ws.removeEventListener('message', onWsMessage);
+    props.ws.removeEventListener('open', onBookingWsOpen);
   }
   window.removeEventListener('resize', updateDimensions);
   resizeObserver?.disconnect();

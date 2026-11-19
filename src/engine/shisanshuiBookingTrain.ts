@@ -19,6 +19,8 @@ import {
   autoArrangeThirteen,
   compareTwoPlayers,
   detectSpecialHand,
+  evaluate3CardTier,
+  evaluate5CardTier,
   SpecialHandResult,
   ThirteenVersusResult,
 } from './shisanshuiRules';
@@ -59,12 +61,36 @@ export interface SubmittedHandTiers {
   specialHand?: SpecialHandResult | null;
 }
 
+export interface BookingSeatOccupant {
+  seat: string;
+  playerId: string;
+  playerName: string;
+  avatar?: string;
+  selectedAt: number;
+  submittedCount: number;
+}
+
+export interface TableSettlementOpponentSummary {
+  oppSeat: number;
+  seatLabel: string;
+  oppName: string;
+  isRealPlayer: boolean;
+  frontLabel: string;
+  midLabel: string;
+  backLabel: string;
+  specialHandName?: string;
+  finalWater: number;
+  isShot: boolean;
+  isFoulOpp: boolean;
+}
+
 export interface TableSettlementDetail {
   isSettled: boolean;
   totalWater: number;
   netScore: number;
   isGrandSlam: boolean;
   opponentsBreakdown: ThirteenVersusResult[];
+  opponentSummaries?: TableSettlementOpponentSummary[];
   settledAt?: number;
 }
 
@@ -78,10 +104,16 @@ export interface BookingTableState {
   tableDeckSeed: string;
   seatCards: Record<string, Card[]>;
   settlement?: TableSettlementDetail;
+  realOpponentsSubmittedSeats?: string[];
+  settledCycleKey?: string;
+  graceFor0600Cycle?: string;
 }
 
 export interface BookingCarriageState {
-  carriageNumber: number; // 1, 2, 3...
+  carriageId?: string; // e.g. four-booking_car_1_g1
+  predealtId?: string; // 预发牌库批次编号
+  carriageNumber: number; // 1, 2, 3... (player stage number)
+  groupIndex?: number; // 1, 2, 3... (parallel cohort within same carriageNumber)
   sceneMode: 'four-booking' | 'eight-booking';
   selectedSeat: string | null; // e.g. '东'
   tables: BookingTableState[]; // exactly 10 tables
@@ -89,6 +121,8 @@ export interface BookingCarriageState {
   currentActiveTableIndex: number | null; // currently selected table
   isCompleted: boolean; // all 10 tables submitted
   completedAt?: number;
+  seatOccupants?: Record<string, BookingSeatOccupant>;
+  settledCycleKey?: string;
 }
 
 export interface BookingSettlementRecord {
@@ -101,6 +135,8 @@ export interface BookingSettlementRecord {
   netScore: number;
   settledAt: number;
   isSimulation: boolean;
+  settledCycleKey?: string;
+  coinsCredited?: boolean;
   tablesSummary: {
     tableIndex: number;
     playerSeat: string;
@@ -121,7 +157,21 @@ export interface BookingTrainStorage {
   settlementHistory: BookingSettlementRecord[];
 }
 
-const STORAGE_KEY = 'sss_booking_train_data_v1';
+const STORAGE_KEY_BASE = 'sss_booking_train_data_v2';
+let activeStorageScope = 'practice';
+
+export function setActiveBookingScope(userId?: string, isPractice = false): void {
+  if (isPractice || !userId) {
+    activeStorageScope = 'practice';
+  } else {
+    activeStorageScope = String(userId).replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
+}
+
+function getScopedStorageKey(scope?: string): string {
+  const s = scope || activeStorageScope || 'practice';
+  return `${STORAGE_KEY_BASE}_${s}`;
+}
 
 const SUITS: { suit: '♠' | '♥' | '♣' | '♦'; isRed: boolean }[] = [
   { suit: '♠', isRed: false },
@@ -221,9 +271,30 @@ export function createCarriage(carriageNumber: number, sceneMode: 'four-booking'
   };
 }
 
-export function loadTrainStorage(): BookingTrainStorage {
+export function getToday0600CycleInfo(nowDate = new Date()): {
+  today0600Ts: number;
+  latestCutoffTs: number;
+  latestCycleKey: string;
+} {
+  const today0600 = new Date(nowDate);
+  today0600.setHours(6, 0, 0, 0);
+  const today0600Ts = today0600.getTime();
+  const cutoffDate = new Date(today0600);
+  if (nowDate.getTime() < today0600Ts) {
+    cutoffDate.setDate(cutoffDate.getDate() - 1);
+  }
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const latestCycleKey = `${cutoffDate.getFullYear()}-${pad(cutoffDate.getMonth() + 1)}-${pad(cutoffDate.getDate())}_0600`;
+  return {
+    today0600Ts,
+    latestCutoffTs: cutoffDate.getTime(),
+    latestCycleKey,
+  };
+}
+
+export function loadTrainStorage(scope?: string): BookingTrainStorage {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getScopedStorageKey(scope));
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed['four-booking'] && parsed['eight-booking']) {
@@ -249,13 +320,13 @@ export function loadTrainStorage(): BookingTrainStorage {
     },
     settlementHistory: [],
   };
-  saveTrainStorage(initial);
+  saveTrainStorage(initial, scope);
   return initial;
 }
 
-export function saveTrainStorage(data: BookingTrainStorage): void {
+export function saveTrainStorage(data: BookingTrainStorage, scope?: string): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(getScopedStorageKey(scope), JSON.stringify(data));
   } catch (e) {
     console.warn('Failed to save booking train state:', e);
   }
@@ -286,7 +357,6 @@ export function selectCarriageSeat(
 
   carriage.selectedSeat = seat;
 
-  // 从未挑战的桌次列表中乱序抽取一张
   if (carriage.unplayedTableIndices.length > 0) {
     const randIdx = Math.floor(Math.random() * carriage.unplayedTableIndices.length);
     const chosenTableNum = carriage.unplayedTableIndices[randIdx];
@@ -302,10 +372,11 @@ export function selectCarriageSeat(
 }
 
 /**
- * 乱序抽取当前车厢中下一张未挑战的牌桌
+ * 乱序抽取或指定进入当前车厢中下一张未挑战的牌桌
  */
 export function pickNextRandomTable(
-  sceneMode: 'four-booking' | 'eight-booking'
+  sceneMode: 'four-booking' | 'eight-booking',
+  specificTableIndex?: number
 ): { carriage: BookingCarriageState; activeTable: BookingTableState | null } {
   const storage = loadTrainStorage();
   const modeData = storage[sceneMode];
@@ -322,8 +393,11 @@ export function pickNextRandomTable(
     return { carriage, activeTable: null };
   }
 
-  const randIdx = Math.floor(Math.random() * carriage.unplayedTableIndices.length);
-  const chosenTableNum = carriage.unplayedTableIndices[randIdx];
+  const chosenTableNum =
+    typeof specificTableIndex === 'number' && carriage.unplayedTableIndices.includes(specificTableIndex)
+      ? specificTableIndex
+      : carriage.unplayedTableIndices[Math.floor(Math.random() * carriage.unplayedTableIndices.length)];
+
   carriage.currentActiveTableIndex = chosenTableNum;
 
   saveTrainStorage(storage);
@@ -336,7 +410,8 @@ export function pickNextRandomTable(
  */
 export function submitCurrentTableHand(
   sceneMode: 'four-booking' | 'eight-booking',
-  handTiers: SubmittedHandTiers
+  handTiers: SubmittedHandTiers,
+  isGraceSubmission = false
 ): {
   carriage: BookingCarriageState;
   submittedTable: BookingTableState;
@@ -360,8 +435,10 @@ export function submitCurrentTableHand(
   table.submittedAt = Date.now();
   table.playerSeat = carriage.selectedSeat || '东';
   table.playerHand = handTiers;
+  if (isGraceSubmission) {
+    table.graceFor0600Cycle = getToday0600CycleInfo().latestCycleKey;
+  }
 
-  // 从未挑战列表中移除该牌桌
   carriage.unplayedTableIndices = carriage.unplayedTableIndices.filter(
     (idx) => idx !== carriage.currentActiveTableIndex
   );
@@ -372,7 +449,6 @@ export function submitCurrentTableHand(
     carriage.completedAt = Date.now();
   }
 
-  // 封盘提交后，重置当前活动桌号，等待玩家点击「继续挑战下一桌」
   carriage.currentActiveTableIndex = null;
 
   saveTrainStorage(storage);
@@ -419,7 +495,6 @@ export function calculateNext0600Countdown(): {
 
   target.setHours(6, 0, 0, 0);
 
-  // 如果当前时间已经过了今天早上 06:00，则目标结算时间为明天凌晨 06:00
   if (now.getTime() >= target.getTime()) {
     target.setDate(target.getDate() + 1);
   }
@@ -445,11 +520,13 @@ export function calculateNext0600Countdown(): {
 }
 
 /**
- * 比水结算一张牌桌（比对玩家提交手牌 vs 牌桌其余坐席预设手牌）
+ * 比水结算一张牌桌（比对玩家提交手牌 vs 牌桌其余坐席预设或真实玩家手牌）
  */
 export function settleSingleTable(
   table: BookingTableState,
-  sceneMode: 'four-booking' | 'eight-booking'
+  sceneMode: 'four-booking' | 'eight-booking',
+  isSimulation = false,
+  cycleKey?: string
 ): TableSettlementDetail {
   if (!table.isSubmitted || !table.playerHand) {
     return {
@@ -458,6 +535,7 @@ export function settleSingleTable(
       netScore: 0,
       isGrandSlam: false,
       opponentsBreakdown: [],
+      opponentSummaries: [],
     };
   }
 
@@ -472,6 +550,7 @@ export function settleSingleTable(
   };
 
   const breakdowns: ThirteenVersusResult[] = [];
+  const opponentSummaries: TableSettlementOpponentSummary[] = [];
   let totalWater = 0;
   let gunshotWinsCount = 0;
 
@@ -479,6 +558,7 @@ export function settleSingleTable(
     const oppCards = table.seatCards[seat] || [];
     const oppCardsSSS = oppCards.map(toSSSCard);
     const oppArrangement = autoArrangeThirteen(oppCardsSSS, 'optimal');
+    const oppName = `【${seat}位】牌友`;
 
     const vsResult = compareTwoPlayers(
       myHandSSS,
@@ -488,10 +568,23 @@ export function settleSingleTable(
         tail: oppArrangement.tail,
       },
       idx + 1,
-      `【${seat}位】牌友`
+      oppName
     );
 
     breakdowns.push(vsResult);
+    opponentSummaries.push({
+      oppSeat: idx + 1,
+      seatLabel: seat,
+      oppName,
+      isRealPlayer: false,
+      frontLabel: evaluate3CardTier(oppArrangement.head).name,
+      midLabel: evaluate5CardTier(oppArrangement.mid).name,
+      backLabel: evaluate5CardTier(oppArrangement.tail).name,
+      specialHandName: oppArrangement.specialHand?.name,
+      finalWater: vsResult.finalWater,
+      isShot: vsResult.isShot,
+      isFoulOpp: vsResult.isFoulOpp,
+    });
     totalWater += vsResult.finalWater;
     if (vsResult.isShot && vsResult.finalWater > 0) {
       gunshotWinsCount++;
@@ -503,19 +596,22 @@ export function settleSingleTable(
     totalWater *= 2;
   }
 
-  // 十三张一水即一分，净分与净水数 1:1 精确对应
   const netScore = totalWater;
 
   const result: TableSettlementDetail = {
-    isSettled: true,
+    isSettled: !isSimulation,
     totalWater,
     netScore,
     isGrandSlam,
     opponentsBreakdown: breakdowns,
+    opponentSummaries,
     settledAt: Date.now(),
   };
 
   table.settlement = result;
+  if (!isSimulation && cycleKey) {
+    table.settledCycleKey = cycleKey;
+  }
   return result;
 }
 
@@ -525,7 +621,8 @@ export function settleSingleTable(
 export function settleCarriageTables(
   sceneMode: 'four-booking' | 'eight-booking',
   carriageNumber?: number,
-  isSimulation = false
+  isSimulation = false,
+  cycleKey?: string
 ): BookingSettlementRecord {
   const storage = loadTrainStorage();
   const modeData = storage[sceneMode];
@@ -540,10 +637,14 @@ export function settleCarriageTables(
   let sumWater = 0;
   let sumScore = 0;
   let settledCount = 0;
+  const effectiveCycleKey = cycleKey || getToday0600CycleInfo().latestCycleKey;
 
   carriage.tables.forEach((table) => {
     if (table.isSubmitted && table.playerHand) {
-      const detail = settleSingleTable(table, sceneMode);
+      if (!isSimulation && table.settledCycleKey) {
+        return;
+      }
+      const detail = settleSingleTable(table, sceneMode, isSimulation, effectiveCycleKey);
       sumWater += detail.totalWater;
       sumScore += detail.netScore;
       settledCount++;
@@ -566,11 +667,16 @@ export function settleCarriageTables(
     netScore: sumScore,
     settledAt: Date.now(),
     isSimulation,
+    settledCycleKey: isSimulation ? undefined : effectiveCycleKey,
+    coinsCredited: false,
     tablesSummary,
   };
 
-  if (!isSimulation) {
+  if (!isSimulation && settledCount > 0) {
     storage.settlementHistory.unshift(record);
+    if (storage.settlementHistory.length > 50) {
+      storage.settlementHistory = storage.settlementHistory.slice(0, 50);
+    }
   }
 
   saveTrainStorage(storage);
@@ -596,30 +702,36 @@ export function getBookingSettlementHistory(): BookingSettlementRecord[] {
 }
 
 /**
- * 自动检查并触发每日 06:00 比水结算
+ * 自动检查并触发每日 06:00 比水结算（遍历所有未结算车厢，绝不漏单）
  */
 export function checkAndAutoSettle0600(
   sceneMode: 'four-booking' | 'eight-booking'
 ): BookingSettlementRecord | null {
   const storage = loadTrainStorage();
   const modeData = storage[sceneMode];
-  const carriage = modeData.carriages[modeData.currentCarriageNumber];
+  if (!modeData?.carriages) return null;
 
-  if (!carriage) return null;
+  const { latestCutoffTs, latestCycleKey } = getToday0600CycleInfo();
+  const nowTs = Date.now();
+  if (nowTs < latestCutoffTs) return null;
 
-  const submittedTables = carriage.tables.filter((t) => t.isSubmitted);
-  if (submittedTables.length === 0) return null;
+  const sortedCarriages = Object.values(modeData.carriages).sort(
+    (a, b) => a.carriageNumber - b.carriageNumber
+  );
 
-  // 检查是否已经到达或过了今天 06:00，且存在在今天 06:00 之前提交但尚未结算的桌次
-  const now = new Date();
-  const today0600 = new Date(now);
-  today0600.setHours(6, 0, 0, 0);
-  const cutoffTs = today0600.getTime();
-
-  const hasUnsettled = submittedTables.some((t) => !t.settlement?.isSettled && (t.submittedAt || 0) < cutoffTs);
-  if (now.getTime() >= cutoffTs && hasUnsettled) {
-    return settleCarriageTables(sceneMode, carriage.carriageNumber, false);
+  let latestRecord: BookingSettlementRecord | null = null;
+  for (const carriage of sortedCarriages) {
+    const dueTables = (carriage.tables || []).filter(
+      (t) =>
+        t.isSubmitted &&
+        t.playerHand &&
+        !t.settledCycleKey &&
+        ((t.submittedAt || 0) < latestCutoffTs || t.graceFor0600Cycle === latestCycleKey)
+    );
+    if (dueTables.length > 0) {
+      latestRecord = settleCarriageTables(sceneMode, carriage.carriageNumber, false, latestCycleKey);
+    }
   }
 
-  return null;
+  return latestRecord;
 }

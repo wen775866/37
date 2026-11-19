@@ -13,6 +13,15 @@ import { presenceTracker } from './presenceTracker.ts';
 import iconv from 'iconv-lite';
 import { initServerCarriageTables } from './games/shisanshui/bookingTrain.ts';
 import type { ServerBookingCarriage, ServerBookingTable } from './games/shisanshui/types.ts';
+import {
+  ackServerUnreadSettlements,
+  advanceServerBookingCarriage,
+  getServerBookingState,
+  pickServerBookingTable,
+  selectServerBookingSeat,
+  simulateServerBookingSettlement,
+  submitServerBookingHand,
+} from './games/shisanshui/serverBookingService.ts';
 
 const BOOKING_FILE = path.resolve(process.cwd(), 'data', 'booking_carriages.json');
 
@@ -2061,16 +2070,68 @@ export async function handleApiRoute(
     }
   }
 
-  // 1f. Booking Carriages API (水镜十三水预约专列车厢赛牌桌数据与提交)
+  // 1f. Booking Carriages API (水镜十三水预约专列车厢赛牌桌数据与提交 - 权威多端同步)
   if (pathname === '/api/booking/carriage' && method === 'GET') {
     try {
       const sceneMode = (urlObj.searchParams.get('sceneMode') === 'eight-booking') ? 'eight-booking' : 'four-booking';
-      const carriageNumber = parseInt(urlObj.searchParams.get('carriageNumber') || '1', 10);
-      const carriage = await withBookingCarriagesLock(() => getOrInitServerCarriage(sceneMode, carriageNumber));
-      sendJson(res, 200, { success: true, carriage });
+      const carriageId = urlObj.searchParams.get('carriageId') || undefined;
+      const carriageNumParam = urlObj.searchParams.get('carriageNumber');
+      const requestedCarriageNumber = carriageNumParam ? parseInt(carriageNumParam, 10) : undefined;
+      const userId = urlObj.searchParams.get('playerId') || urlObj.searchParams.get('userId') || 'guest';
+      const playerName = urlObj.searchParams.get('playerName') || '茶客';
+      const avatar = urlObj.searchParams.get('avatar') || '👑';
+      const state = await getServerBookingState({
+        sceneMode,
+        userId,
+        playerName,
+        avatar,
+        requestedCarriageId: carriageId,
+        requestedCarriageNumber,
+      });
+      sendJson(res, 200, { success: true, ...state });
       return true;
     } catch (err: any) {
       sendJson(res, 500, { success: false, error: String(err?.message || err) });
+      return true;
+    }
+  }
+
+  if (pathname === '/api/booking/select-seat' && method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+      const resData = await selectServerBookingSeat({
+        sceneMode,
+        userId: payload.playerId || payload.userId || 'guest',
+        playerName: payload.playerName || '茶客',
+        avatar: payload.avatar || '👑',
+        seat: payload.seat || '东',
+        carriageId: payload.carriageId || undefined,
+        carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
+      });
+      sendJson(res, resData.ok ? 200 : 400, { success: resData.ok, ...resData });
+      return true;
+    } catch (err: any) {
+      sendJson(res, 400, { success: false, error: String(err?.message || err) });
+      return true;
+    }
+  }
+
+  if (pathname === '/api/booking/pick-table' && method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+      const resData = await pickServerBookingTable({
+        sceneMode,
+        userId: payload.playerId || payload.userId || 'guest',
+        carriageId: payload.carriageId || undefined,
+        carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
+        specificTableIndex: payload.tableIndex ? Number(payload.tableIndex) : undefined,
+      });
+      sendJson(res, resData.ok ? 200 : 400, { success: resData.ok, ...resData });
+      return true;
+    } catch (err: any) {
+      sendJson(res, 400, { success: false, error: String(err?.message || err) });
       return true;
     }
   }
@@ -2079,42 +2140,71 @@ export async function handleApiRoute(
     try {
       const payload = await parseJsonBody(req);
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-      const carriageNum = Number(payload.carriageNumber) || 1;
-      const tIdx = Number(payload.tableIndex) || 1;
-
-      const result = await withBookingCarriagesLock(() => {
-        const carriages = loadBookingCarriagesFromDisk();
-        const key = `${sceneMode}_car_${carriageNum}`;
-        const carriage = carriages[key] || initServerCarriageTables(carriageNum, sceneMode);
-
-        const table = carriage.tables?.find((t) => t.tableIndex === tIdx);
-        if (!table) {
-          return { notFound: true as const };
-        }
-        table.isSubmitted = true;
-        table.playerSeat = payload.playerSeat || carriage.selectedSeat || '东';
-        table.playerId = payload.playerId;
-        table.playerName = payload.playerName;
-        table.playerHand = payload.playerHand;
-        table.submittedAt = Date.now();
-        table.status = 'submitted';
-
-        carriage.unplayedTableIndices = (carriage.unplayedTableIndices || []).filter((idx) => idx !== tIdx);
-        if (carriage.unplayedTableIndices.length === 0) {
-          carriage.isCompleted = true;
-        }
-        carriage.currentActiveTableIndex = null;
-
-        carriages[key] = carriage;
-        saveBookingCarriagesToDisk(carriages);
-        return { notFound: false as const, carriage, submittedTable: table };
+      const resData = await submitServerBookingHand({
+        sceneMode,
+        userId: payload.playerId || payload.userId || 'guest',
+        playerName: payload.playerName || '茶客',
+        avatar: payload.avatar || '👑',
+        carriageId: payload.carriageId || undefined,
+        carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
+        tableIndex: payload.tableIndex ? Number(payload.tableIndex) : undefined,
+        playerSeat: payload.playerSeat,
+        handTiers: payload.playerHand,
+        isGraceSubmission: Boolean(payload.isGraceSubmission),
       });
+      sendJson(res, resData.ok ? 200 : 400, { success: resData.ok, ...resData });
+      return true;
+    } catch (err: any) {
+      sendJson(res, 400, { success: false, error: String(err?.message || err) });
+      return true;
+    }
+  }
 
-      if (result.notFound) {
-        sendJson(res, 404, { success: false, error: 'table_not_found' });
-        return true;
+  if (pathname === '/api/booking/advance-carriage' && method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+      const resData = await advanceServerBookingCarriage({
+        sceneMode,
+        userId: payload.playerId || payload.userId || 'guest',
+        playerName: payload.playerName || '茶客',
+        avatar: payload.avatar || '👑',
+        createFresh: Boolean(payload.createFresh),
+      });
+      sendJson(res, 200, { success: true, ...resData });
+      return true;
+    } catch (err: any) {
+      sendJson(res, 400, { success: false, error: String(err?.message || err) });
+      return true;
+    }
+  }
+
+  if (pathname === '/api/booking/simulate-settle' && method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
+      const resData = await simulateServerBookingSettlement({
+        sceneMode,
+        userId: payload.playerId || payload.userId || 'guest',
+        carriageId: payload.carriageId || undefined,
+        carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
+      });
+      sendJson(res, resData.ok ? 200 : 400, { success: resData.ok, ...resData });
+      return true;
+    } catch (err: any) {
+      sendJson(res, 400, { success: false, error: String(err?.message || err) });
+      return true;
+    }
+  }
+
+  if (pathname === '/api/booking/ack-settlement' && method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const userId = payload.playerId || payload.userId;
+      if (userId) {
+        await ackServerUnreadSettlements(userId);
       }
-      sendJson(res, 200, { success: true, carriage: result.carriage, submittedTable: result.submittedTable });
+      sendJson(res, 200, { success: true });
       return true;
     } catch (err: any) {
       sendJson(res, 400, { success: false, error: String(err?.message || err) });

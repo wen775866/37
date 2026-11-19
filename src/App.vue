@@ -2476,7 +2476,11 @@ function onSelectShisanshuiScene(mode: ShisanshuiSceneMode) {
   showChatDrawer.value = false;
   currentWaitingRoomPlayers.value = [];
   if (mode === 'four-booking' || mode === 'eight-booking') {
+    activeRoomId.value = `booking-${mode}`;
+    currentRoomDeal.value = null;
+    myAssignedSeat.value = null;
     currentView.value = 'arena';
+    notifyPresence('shisanshui', mode);
   } else {
     currentView.value = 'chatroom';
     notifyPresence('shisanshui', mode);
@@ -2677,7 +2681,7 @@ function returnToLobby(forceExit: boolean | any = false) {
       return;
     }
   }
-  if (!isPracticeMode.value && ws && ws.readyState === WebSocket.OPEN && (activeRoomId.value || activeGameType.value)) {
+  if (!isPracticeMode.value && ws && ws.readyState === WebSocket.OPEN && (activeRoomId.value || activeGameType.value) && !activeRoomId.value?.startsWith('booking-')) {
     try {
       ws.send(JSON.stringify({
         type: 'scene_leave',
@@ -3051,6 +3055,16 @@ function connectWs() {
               const firstKey = serverSettledRooms.keys().next().value;
               if (firstKey) serverSettledRooms.delete(firstKey);
             }
+          } else if (msg.source === 'booking_0600_settlement') {
+            recordPointsTx(
+              delta >= 0 ? 'game_win' : 'game_loss',
+              `🌅 十三张预约专列 06:00 结算 (第${msg.carriageNumber || 1}车厢·${msg.settledTablesCount || 0}桌)`,
+              delta,
+              userProfile.coins,
+              userProfile.phone || userProfile.id
+            );
+            soundFX.playCoinShower();
+            triggerSpeechBubble(`🌅 十三张预约场 06:00 结算已入账：${delta >= 0 ? '+' : ''}${delta} 分（余额 ${msg.coins.toLocaleString()} 分）`);
           } else {
             recordPointsTx(
               delta >= 0 ? 'admin_grant' : 'admin_deduct',
@@ -3061,6 +3075,27 @@ function connectWs() {
             soundFX.playCoinShower();
             triggerSpeechBubble(`🪙 钱庄筹码已更新为 ${msg.coins.toLocaleString()} 分 (${delta >= 0 ? '+' : ''}${delta})`);
           }
+        }
+      } else if (msg.type === 'booking_0600_settled') {
+        if (msg.userId && (msg.userId === userProfile.id || (myAssignedPlayerId.value && msg.userId === myAssignedPlayerId.value))) {
+          if (msg.record) {
+            const rec: MatchRecord = {
+              id: msg.record.id || `BOOK-${Date.now()}`,
+              gameType: 'shisanshui',
+              gameName: msg.sceneMode === 'eight-booking' ? '十三张·八人预约专列' : '十三张·四人预约专列',
+              result: (msg.delta || 0) > 0 ? 'win' : (msg.delta || 0) < 0 ? 'lose' : 'draw',
+              coinsDelta: msg.delta || 0,
+              ratingDelta: Math.round((msg.record.totalWater || 0) * 1.2),
+              details: `第${msg.record.carriageNumber || 1}节车厢 (${msg.record.settledTablesCount || 0}桌06:00结算) · 净胜 ${(msg.record.totalWater || 0) >= 0 ? `+${msg.record.totalWater}` : msg.record.totalWater} 水`,
+              timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+            };
+            if (!matchRecords.some((r) => r.id === rec.id)) {
+              matchRecords.unshift(rec);
+              if (matchRecords.length > 50) matchRecords.pop();
+              saveLocalRecords(matchRecords, userProfile.phone || userProfile.id);
+            }
+          }
+          fetchFreshProfile();
         }
       } else if (msg.type === 'all_users_coins_updated') {
         fetchFreshProfile();

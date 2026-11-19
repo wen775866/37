@@ -525,6 +525,7 @@ interface MahjongTile {
   text: string;
   color: string;
   discardBy?: number; // 0=Player(South), 1=East(Right/Green), 2=North(Top/Blue), 3=West(Left/Red)
+  hidden?: boolean;
 }
 
 const props = defineProps<{
@@ -1864,20 +1865,6 @@ function handleReconnectSync(msg: any) {
 
   // Restore melds from server (normalize server meld objects to MahjongTile[][])
   if (bs?.extraState?.mahjongMelds && Array.isArray(bs.extraState.mahjongMelds)) {
-    const normalizeServerMelds = (rawMelds: any[]): MahjongTile[][] => {
-      if (!Array.isArray(rawMelds)) return [];
-      return rawMelds
-        .map((m: any) => {
-          if (Array.isArray(m)) return m;
-          if (Array.isArray(m?.tiles) && m.tiles.length > 0) return m.tiles;
-          if (m && m.tile) {
-            const cnt = m.type === 'gang' ? 4 : 3;
-            return Array.from({ length: cnt }, (_, i) => ({ ...m.tile, id: `${m.tile.id}-m-${i}` }));
-          }
-          return [];
-        })
-        .filter((arr: MahjongTile[]) => arr.length > 0);
-    };
     const sMe = mySeat.value;
     meldedTiles.value = normalizeServerMelds(bs.extraState.mahjongMelds[sMe] || []);
     for (let r = 1; r < 4; r++) {
@@ -1915,7 +1902,8 @@ function handleReconnectSync(msg: any) {
       sortHand([...(deal.seatCards[relToAbsSeat(2)] || [])]),
       sortHand([...(deal.seatCards[relToAbsSeat(3)] || [])]),
     ];
-  } else if (Array.isArray(bs?.handsCount) && bs.handsCount.length === 4) {
+  }
+  if (Array.isArray(bs?.handsCount) && bs.handsCount.length === 4) {
     for (let r = 1; r < 4; r++) {
       const targetLen = Number(bs.handsCount[relToAbsSeat(r)] ?? 13);
       while (oppHands.value[r - 1].length > targetLen) {
@@ -1928,6 +1916,7 @@ function handleReconnectSync(msg: any) {
           value: 1,
           text: '一万',
           color: '#DC2626',
+          hidden: true,
         });
       }
     }
@@ -2934,11 +2923,73 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
 
 let drawRafId: number | null = null;
 
+function normalizeServerMelds(rawMelds: any[]): MahjongTile[][] {
+  if (!Array.isArray(rawMelds)) return [];
+  return rawMelds
+    .map((m: any) => {
+      if (Array.isArray(m)) return m;
+      if (Array.isArray(m?.tiles) && m.tiles.length > 0) return m.tiles;
+      if (m && m.tile) {
+        const cnt = m.type === 'gang' ? 4 : 3;
+        return Array.from({ length: cnt }, (_, i) => ({ ...m.tile, id: `${m.tile.id}-m-${i}` }));
+      }
+      return [];
+    })
+    .filter((arr: MahjongTile[]) => arr.length > 0);
+}
+
+function syncOpponentsFromBoardState(bs: any) {
+  if (!bs || !isOnlineMultiplayerRoom.value) return;
+  if (dealingPhase.value !== 'playing' || hasWon.value || showSettlement.value || isDrawStalemate.value) return;
+  let changed = false;
+  if (Array.isArray(bs.handsCount) && bs.handsCount.length === 4) {
+    for (let r = 1; r < 4; r++) {
+      const absR = relToAbsSeat(r);
+      const targetLen = Number(bs.handsCount[absR]);
+      if (Number.isNaN(targetLen) || targetLen < 0) continue;
+      const bIdx = r - 1;
+      const arr = oppHands.value[bIdx] || [];
+      if (arr.length !== targetLen) {
+        while (arr.length > targetLen) {
+          arr.pop();
+        }
+        while (arr.length < targetLen) {
+          arr.push({
+            id: `opp-sync-${r}-${arr.length}-${Date.now()}`,
+            type: 'wan',
+            value: 1,
+            text: '一万',
+            color: '#DC2626',
+            hidden: true,
+          });
+        }
+        oppHands.value[bIdx] = arr;
+        changed = true;
+      }
+    }
+  }
+  if (Array.isArray(bs.extraState?.mahjongMelds) && bs.extraState.mahjongMelds.length === 4) {
+    for (let r = 1; r < 4; r++) {
+      const absR = relToAbsSeat(r);
+      const normalized = normalizeServerMelds(bs.extraState.mahjongMelds[absR] || []);
+      const cur = oppMelds.value[r - 1] || [];
+      const sameLen = cur.length === normalized.length && cur.every((m, idx) => m.length === normalized[idx]?.length);
+      if (!sameLen) {
+        oppMelds.value[r - 1] = normalized;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    drawTable();
+  }
+}
+
 function ensureOpponentHandSize(botIdx: number) {
   if (dealingPhase.value !== 'playing' && dealingPhase.value !== 'sorting_tiles') return;
   const oppHand = oppHands.value[botIdx] || [];
   const meldCount = (oppMelds.value[botIdx] || []).length;
-  // Standard Mahjong rule: baseline hand size is 13 minus meldCount * 3
+  // Standard Mahjong rule: baseline standing hand size is 13 minus meldCount * 3
   if (oppHand.length === 0) {
     const defaultLen = Math.max(1, 13 - (meldCount * 3));
     for (let i = 0; i < defaultLen; i++) {
@@ -2948,6 +2999,7 @@ function ensureOpponentHandSize(botIdx: number) {
         value: 1,
         text: '一万',
         color: '#DC2626',
+        hidden: true,
       });
     }
     oppHands.value[botIdx] = oppHand;
@@ -3247,9 +3299,8 @@ function getPlayerInfoByRelSeat(relSeat: number): { name: string; avatar: string
     if (dealingPhase.value === 'rolling_dice') return 0;
     const botIdx = relSeat - 1;
     ensureOpponentHandSize(botIdx);
-    const handLen = oppHands.value[botIdx]?.length || 0;
-    const meldCount = (oppMelds.value[botIdx] || []).length;
-    return handLen + meldCount * 3;
+    // 头像角标展示当前“剩余站立手牌数”：碰牌/杠牌亮副后手牌相应减少（如 13 -> 11 -> 10）
+    return oppHands.value[botIdx]?.length || 0;
   }
 
   // 1. Top: North (顶部玩家: 蓝色椭圆头像)
@@ -4095,7 +4146,10 @@ function botPlay(seat: number, next: () => void) {
       const rmIds = new Set(takeThree.map(c => c.id));
       const remainingHand = botHand.filter(c => !rmIds.has(c.id));
       oppMelds.value[botIdx].push([...takeThree, d]);
-      if (discards.value.length > 0 && discards.value[discards.value.length - 1].id === d.id) {
+      const gDiscardIdx = discards.value.findIndex((c) => c.id === d.id);
+      if (gDiscardIdx >= 0) {
+        discards.value.splice(gDiscardIdx, 1);
+      } else if (discards.value.length > 0 && discards.value[discards.value.length - 1].type === d.type && discards.value[discards.value.length - 1].value === d.value) {
         discards.value.pop();
       }
       lastDiscarded.value = null;
@@ -4144,7 +4198,9 @@ function botPlay(seat: number, next: () => void) {
         soundFX.speakVoice(discarded.text);
         tipMessage.value = `🀄 【${SEAT_NAMES[seat]}】杠后打出了【${discarded.text}】`;
         drawTable();
-        next();
+        waitForPlayerClaim(() => {
+          next();
+        });
       }, 1100);
       botActionTimers.push(t);
       return;
@@ -4156,7 +4212,10 @@ function botPlay(seat: number, next: () => void) {
       const rmIds = new Set(takeTwo.map(c => c.id));
       oppHands.value[botIdx] = botHand.filter(c => !rmIds.has(c.id));
       oppMelds.value[botIdx].push([...takeTwo, d]);
-      if (discards.value.length > 0 && discards.value[discards.value.length - 1].id === d.id) {
+      const pDiscardIdx = discards.value.findIndex((c) => c.id === d.id);
+      if (pDiscardIdx >= 0) {
+        discards.value.splice(pDiscardIdx, 1);
+      } else if (discards.value.length > 0 && discards.value[discards.value.length - 1].type === d.type && discards.value[discards.value.length - 1].value === d.value) {
         discards.value.pop();
       }
       lastDiscarded.value = null;
@@ -4913,6 +4972,9 @@ function onWsMessage(ev: MessageEvent) {
 
       if (evtAbsSeat >= 0 && evtAbsSeat !== mySeat.value) {
         handleRemoteGameEvent(evtAbsSeat, evt);
+        if (msg.boardState) {
+          syncOpponentsFromBoardState(msg.boardState);
+        }
       } else if (evtAbsSeat === mySeat.value) {
         if (evt.action === 'draw') {
           isOnlineDrawPending = false;

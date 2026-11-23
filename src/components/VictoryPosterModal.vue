@@ -472,26 +472,37 @@ function copyReportText() {
   }
 }
 
-function shareToTelegram() {
+async function shareToTelegram() {
   const p = props.data;
   const sign = p.scoreDelta > 0 ? '+' : '';
-  const text = encodeURIComponent(
+  const rawText =
     `🏮【国粹棋牌 · 雀坛战报】🏮\n` +
     `大将：${p.playerName}\n` +
     `玩法：${p.gameType}\n` +
     `战果：${sign}${p.scoreDelta} ${p.scoreUnit || '分'}\n` +
     (p.tableSummary ? `手牌：${p.tableSummary}\n` : '') +
-    `速速入席与我一决高下！`
-  );
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(window.location.origin)}&text=${text}`;
+    `速速入席与我一决高下！`;
+
   try {
-    const w = window.open(shareUrl, '_blank');
-    if (!w) {
-      navigator.clipboard?.writeText?.(decodeURIComponent(text)).catch(() => {});
+    if (typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function') {
+      await (navigator as any).share({
+        title: '国粹棋牌 · 雀坛战报',
+        text: rawText,
+        url: window.location.origin,
+      });
+      return;
     }
   } catch {
-    navigator.clipboard?.writeText?.(decodeURIComponent(text)).catch(() => {});
+    // Fall back to clipboard copy when native share is unavailable or cancelled
   }
+
+  try {
+    await navigator.clipboard?.writeText?.(`${rawText}\n${window.location.origin}`);
+    copySuccess.value = true;
+    setTimeout(() => {
+      copySuccess.value = false;
+    }, 2500);
+  } catch {}
 }
 </script>
 

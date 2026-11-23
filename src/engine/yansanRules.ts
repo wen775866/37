@@ -935,20 +935,25 @@ export function getYansanSmartAIPlay(
     }
     for (const c of hand) playedCardIds.add(c.id);
 
-    const allSuits: ('♠' | '♥' | '♣' | '♦')[] = ['♠', '♥', '♣', '♦'];
+    const suitDefs: { suit: '♠' | '♥' | '♣' | '♦'; suitVal: number }[] = [
+      { suit: '♠', suitVal: 4 },
+      { suit: '♥', suitVal: 3 },
+      { suit: '♣', suitVal: 2 },
+      { suit: '♦', suitVal: 1 },
+    ];
     const availablePool: YansanCard[] = [];
     for (let r = 3; r <= 15; r++) {
-      for (let s = 1; s <= 4; s++) {
-        const suitStr = allSuits[s - 1];
-        const cardId = `yansan-${r}-${s}`;
+      const rLabel = getYansanRankLabel(r);
+      for (const sd of suitDefs) {
+        const cardId = `${rLabel}-${sd.suit}`;
         if (!playedCardIds.has(cardId)) {
           availablePool.push({
             id: cardId,
             rank: r,
-            suitVal: s,
-            label: `${suitStr}${getYansanRankLabel(r)}`,
-            suit: suitStr,
-            isRed: suitStr === '♥' || suitStr === '♦',
+            suitVal: sd.suitVal,
+            label: rLabel,
+            suit: sd.suit,
+            isRed: sd.suit === '♥' || sd.suit === '♦',
           });
         }
       }
@@ -963,7 +968,7 @@ export function getYansanSmartAIPlay(
 
     // 0a. 神级必胜连发算力 (Master Winning Sequence Solver)
     const winSeqCombo = findYansanWinningSequence(sorted, availablePool, maxOpponentHandSize);
-    if (winSeqCombo) {
+    if (winSeqCombo && (!isFirstTurn || winSeqCombo.some((c) => c.rank === 4 && c.suit === '♦'))) {
       const p = parseYansanCombo(winSeqCombo);
       return {
         cards: winSeqCombo,

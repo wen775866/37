@@ -193,13 +193,37 @@ export async function testServerConnection(targetUrl?: string): Promise<{ ok: bo
   }
 }
 
+let runtimeAuthToken = '';
+
+export function setAuthToken(token: string): void {
+  runtimeAuthToken = String(token || '').trim();
+}
+
+export function getAuthToken(): string {
+  return runtimeAuthToken;
+}
+
+function isApiEndpoint(input: RequestInfo | URL): boolean {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  return url.startsWith('/api/') || url.includes('/api/');
+}
+
+function injectAuthHeader(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
+  if (!runtimeAuthToken || !isApiEndpoint(input)) return init;
+  const headers = new Headers(init?.headers || (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
+  if (!headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${runtimeAuthToken}`);
+  }
+  return { ...(init || {}), headers };
+}
+
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const resolved = typeof input === 'string' ? resolveApiUrl(input) : input;
   const rawFetch = (window as any)._originalFetch || window.fetch;
-  return rawFetch(resolved, init);
+  return rawFetch(resolved, injectAuthHeader(resolved, init));
 }
 
-// Global transparent fetch patch for native APK environment
+// Global transparent fetch patch for native APK environment & Bearer session auth
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   try {
     if (!(window as any)._originalFetch) {
@@ -207,11 +231,12 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     }
     const originalFetch = (window as any)._originalFetch;
     window.fetch = function (input: RequestInfo | URL, init?: RequestInit) {
+      const nextInit = injectAuthHeader(input, init);
       if (typeof input === 'string' && input.startsWith('/api/') && isNativeApkEnvironment()) {
         const remote = getRemoteServerUrl();
-        return originalFetch(`${remote}${input}`, init);
+        return originalFetch(`${remote}${input}`, nextInit);
       }
-      return originalFetch(input, init);
+      return originalFetch(input, nextInit);
     };
   } catch {}
 }

@@ -25,7 +25,7 @@ import {
   TableSettlementDetail,
   TableSettlementOpponentSummary,
 } from '../../engine/shisanshuiBookingTrain.ts';
-import { loadDatabase, saveDatabase } from '../../serverStorage.ts';
+import { loadDatabase, saveDatabase, recordServerPointsTx } from '../../serverStorage.ts';
 import { generateServerShuffledDeck } from './bookingTrain.ts';
 
 export type BookingSceneMode = 'four-booking' | 'eight-booking';
@@ -264,6 +264,53 @@ function saveStore(store: ServerBookingStore): void {
     fs.renameSync(tmpFile, BOOKING_STORE_FILE);
   } catch (err) {
     console.error('[ServerBooking] Failed saving booking store:', err);
+  }
+}
+
+function archiveOldCompletedCarriages(store: ServerBookingStore): boolean {
+  const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const activePointerIds = new Set(Object.values(store.userCurrentCarriageId || {}));
+  const toArchive: ServerMultiBookingCarriage[] = [];
+
+  for (const [cid, car] of Object.entries(store.carriages || {})) {
+    if (!car || activePointerIds.has(cid)) continue;
+    if (now - (car.createdAt || 0) < SEVEN_DAYS_MS) continue;
+    const progresses = Object.values(car.playerProgress || {});
+    if (progresses.length === 0) continue;
+    const allCompletedAndSettled = progresses.every((p) => p.isCompleted && Boolean(p.settledCycleKey));
+    if (allCompletedAndSettled) {
+      toArchive.push(car);
+    }
+  }
+
+  if (toArchive.length === 0) return false;
+
+  try {
+    const d = new Date(now);
+    const monthTag = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const archiveFile = path.resolve(process.cwd(), 'data', `booking_archive_${monthTag}.json`);
+    let existingArchive: ServerMultiBookingCarriage[] = [];
+    if (fs.existsSync(archiveFile)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(archiveFile, 'utf-8'));
+        if (Array.isArray(parsed?.carriages)) existingArchive = parsed.carriages;
+      } catch {}
+    }
+    const existingIds = new Set(existingArchive.map((c) => c.carriageId));
+    for (const c of toArchive) {
+      if (!existingIds.has(c.carriageId)) {
+        existingArchive.push(c);
+      }
+      delete store.carriages[c.carriageId];
+    }
+    const tmp = `${archiveFile}.tmp.${now}`;
+    fs.writeFileSync(tmp, JSON.stringify({ updatedAt: now, carriages: existingArchive }), 'utf-8');
+    fs.renameSync(tmp, archiveFile);
+    return true;
+  } catch (err) {
+    console.warn('[ServerBooking] Archive error:', err);
+    return false;
   }
 }
 
@@ -890,6 +937,14 @@ export function run0600SettlementSweepInternal(
           updatedAt: nowTs,
         });
         if (db.records.length > 500) db.records = db.records.slice(0, 500);
+        recordServerPointsTx(
+          db,
+          userId,
+          delta >= 0 ? 'game_win' : 'game_loss',
+          `🌅 十三张预约专列 06:00 结算 (第${carriage.carriageNumber}车厢·${dueTables.length}桌)`,
+          delta,
+          profile.coins
+        );
         dbDirty = true;
 
         settledNotifications.push({
@@ -990,6 +1045,11 @@ export async function getServerBookingState(params: {
     }
 
     const unreadSettlements = store.userUnreadSettlements[userId] || [];
+    const archivedOld = archiveOldCompletedCarriages(store);
+    if (archivedOld) {
+      saveStore(store);
+    }
+
     return {
       carriage: projectCarriageForUser(carriage, userId),
       archivedCarriages: buildArchivedCarriagesForUser(store, sceneMode, userId),
@@ -997,6 +1057,7 @@ export async function getServerBookingState(params: {
       unreadSettlements,
       settledNotifications,
       inventoryRemaining: store.predealtPool[sceneMode].length,
+      serverTs: Date.now(),
     };
   });
 }
@@ -1025,6 +1086,16 @@ export async function selectServerBookingSeat(params: {
     const validSeats = getSeatsForMode(sceneMode);
     if (!validSeats.includes(seat)) {
       return { ok: false as const, error: '无效的坐席方位' };
+    }
+
+    const db = loadDatabase();
+    const profile = db.profiles?.[userId];
+    const minCoins = sceneMode === 'eight-booking' ? 500 : 100;
+    if (profile && (profile.coins || 0) < minCoins) {
+      return {
+        ok: false as const,
+        error: `您的可用积分不足（当前 ${profile.coins || 0} 分，需至少 ${minCoins} 分方可入座预约专列）`,
+      };
     }
 
     const store = loadStore();
@@ -1106,6 +1177,7 @@ export async function selectServerBookingSeat(params: {
       rawSeatOccupants: carriage.seatOccupants,
       carriageId: carriage.carriageId,
       carriageNumber: carriage.carriageNumber,
+      serverTs: Date.now(),
     };
   });
 }
@@ -1138,6 +1210,7 @@ export async function pickServerBookingTable(params: {
         ok: true as const,
         carriage: projectCarriageForUser(carriage, userId),
         archivedCarriages: buildArchivedCarriagesForUser(store, sceneMode, userId),
+        serverTs: Date.now(),
       };
     }
 
@@ -1156,6 +1229,7 @@ export async function pickServerBookingTable(params: {
       ok: true as const,
       carriage: projectCarriageForUser(carriage, userId),
       archivedCarriages: buildArchivedCarriagesForUser(store, sceneMode, userId),
+      serverTs: Date.now(),
     };
   });
 }
@@ -1299,6 +1373,7 @@ export async function submitServerBookingHand(params: {
       tableIndex: tIdx,
       seat,
       seatOccupants: carriage.seatOccupants,
+      serverTs: Date.now(),
     };
   });
 }
@@ -1361,6 +1436,7 @@ export async function advanceServerBookingCarriage(params: {
       archivedCarriages: buildArchivedCarriagesForUser(store, sceneMode, userId),
       releasedSeatInfo,
       inventoryRemaining: store.predealtPool[sceneMode].length,
+      serverTs: Date.now(),
     };
   });
 }
@@ -1441,6 +1517,7 @@ export async function simulateServerBookingSettlement(params: {
       record,
       carriage: projectCarriageForUser(carriage, userId),
       archivedCarriages: buildArchivedCarriagesForUser(store, sceneMode, userId),
+      serverTs: Date.now(),
     };
   });
 }

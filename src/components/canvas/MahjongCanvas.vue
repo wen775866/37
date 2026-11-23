@@ -2629,7 +2629,7 @@ const canHu = computed(() => {
  *      - 十码场：等于十码全中加底分，各得其他玩家110分，共330分
  *   2. 自摸手牌没有红中：奖励额外加2个码 (六码场变8码，十码场变12码)
  */
-function triggerDrawStalemate(message = '牌墙已摸空，荒牌流局！', fromServerWs = false) {
+function triggerDrawStalemate(message = '牌墙已摸空，荒牌流局！', fromServerWs = false, payloadData?: any) {
   if (isDrawStalemate.value || hasWon.value || showSettlement.value || dealingPhase.value === 'settled') return;
   cleanAllGameTimers();
   isClaiming.value = false;
@@ -2637,7 +2637,14 @@ function triggerDrawStalemate(message = '牌墙已摸空，荒牌流局！', fro
   wallCount.value = 0;
   isDrawStalemate.value = true;
   dealingPhase.value = 'settled';
-  tipMessage.value = message;
+  const myKongNet =
+    (Array.isArray(payloadData?.netCoinsPerSeat) && typeof payloadData.netCoinsPerSeat[mySeat.value] === 'number'
+      ? payloadData.netCoinsPerSeat[mySeat.value]
+      : Array.isArray(payloadData?.seatKongScores) && typeof payloadData.seatKongScores[mySeat.value] === 'number'
+        ? payloadData.seatKongScores[mySeat.value]
+        : 0);
+  const kongNote = myKongNet !== 0 ? `（本局杠分 ${myKongNet > 0 ? `+${myKongNet}` : myKongNet} 筹码已结算）` : '';
+  tipMessage.value = `${message}${kongNote}`;
   clearLocalSnapshot();
   try {
     localStorage.removeItem('app_active_game_lock');
@@ -4895,7 +4902,7 @@ function onWsMessage(ev: MessageEvent) {
       }
 
       if (evt.action === 'draw_stalemate') {
-        triggerDrawStalemate(evt.message || evt.msg || '牌墙抓毕，本局荒庄（流局）！', true);
+        triggerDrawStalemate(evt.message || evt.msg || '牌墙抓毕，本局荒庄（流局）！', true, evt);
         return;
       }
 

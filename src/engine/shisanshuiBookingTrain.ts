@@ -482,7 +482,7 @@ export function advanceToNextCarriage(
 /**
  * 计算距离每日凌晨 06:00 的结算倒计时
  */
-export function calculateNext0600Countdown(): {
+export function calculateNext0600Countdown(nowInput: Date = new Date()): {
   hours: number;
   minutes: number;
   seconds: number;
@@ -490,7 +490,7 @@ export function calculateNext0600Countdown(): {
   next0600Timestamp: number;
   formattedTargetTime: string;
 } {
-  const now = new Date();
+  const now = new Date(nowInput.getTime());
   const target = new Date(now);
 
   target.setHours(6, 0, 0, 0);

@@ -1,4 +1,4 @@
-import { resolveApiUrl } from './networkConfig';
+import { resolveApiUrl, setAuthToken } from './networkConfig';
 
 export interface GameStat {
   played: number;
@@ -159,9 +159,11 @@ export function loadLocalProfile(): UserProfile {
       if (!profile.stats.yansan) {
         profile.stats.yansan = { played: 0, won: 0, highestScore: 0 };
       }
+      setAuthToken(profile.sessionToken || '');
       return profile;
     }
   } catch {}
+  setAuthToken('');
   return { ...DEFAULT_PROFILE, id: generateUniqueGuestId() };
 }
 
@@ -172,6 +174,7 @@ export function saveLocalProfile(profile: UserProfile): void {
     }
     profile.coins = Math.max(0, Math.floor(Number(profile.coins) || 0));
     profile.updatedAt = Date.now();
+    setAuthToken(profile.sessionToken || '');
     localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(profile));
   } catch {}
 }
@@ -316,8 +319,40 @@ export function saveRegisteredAccounts(accounts: AccountData[]): void {
   } catch {}
 }
 
+export async function fetchCloudPointsLedger(userKey?: string): Promise<PointsTransaction[]> {
+  const local = loadPointsTransactions(userKey);
+  try {
+    const res = await fetch(resolveApiUrl('/api/points/ledger'));
+    if (!res.ok) return local;
+    const data = await res.json();
+    if (!data?.success || !Array.isArray(data.ledger)) return local;
+
+    const now = Date.now();
+    const seenIds = new Set<string>();
+    const merged: PointsTransaction[] = [];
+    for (const item of [...data.ledger, ...local]) {
+      if (!item || typeof item.amount !== 'number') continue;
+      const createdAt = typeof item.createdAt === 'number' ? item.createdAt : now;
+      if (now - createdAt > SEVEN_DAYS_MS) continue;
+      const keyId = item.id || `${createdAt}_${item.title}_${item.amount}`;
+      if (seenIds.has(keyId)) continue;
+      seenIds.add(keyId);
+      merged.push({ ...item, createdAt });
+    }
+    merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    if (merged.length > 100) merged.length = 100;
+
+    const key = getUserStorageKey(STORAGE_KEY_POINTS_TX, userKey);
+    localStorage.setItem(key, JSON.stringify(merged));
+    return merged;
+  } catch {
+    return local;
+  }
+}
+
 export function clearLocalAuthData(): void {
   try {
+    setAuthToken('');
     localStorage.removeItem(STORAGE_KEY_PROFILE);
     localStorage.removeItem(STORAGE_KEY_ACCOUNTS);
   } catch {}

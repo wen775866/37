@@ -831,6 +831,7 @@
     <AuthModal
       v-if="showAuthModal"
       :profile="userProfile"
+      :is-rotated-90="isRotated90"
       @close="showAuthModal = false"
       @update:profile="onUpdateProfile"
       @open-termux="showTermuxModal = true"
@@ -1248,6 +1249,17 @@
               </div>
             </div>
 
+            <div>
+              <label class="block text-xs text-[#6B5744] mb-1 font-bold">私密房口令 (选填，留空则公开)</label>
+              <input
+                v-model="newRoomPasscode"
+                type="text"
+                maxlength="12"
+                placeholder="例如：8888（仅凭口令入座）"
+                class="w-full px-3.5 py-2 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] font-mono focus:outline-none focus:border-[#5C4533]"
+              />
+            </div>
+
             <div class="flex items-center justify-end gap-3 pt-2 border-t border-[#D8C7B0]">
               <button
                 type="button"
@@ -1264,6 +1276,56 @@
               </button>
             </div>
           </form>
+        </div>
+      </div>
+
+      <!-- 私密房间口令验证弹窗 -->
+      <div
+        v-if="pendingPasscodeRoom"
+        class="fixed inset-0 z-[110] bg-black/65 backdrop-blur-md flex items-center justify-center p-3 select-none"
+        @click.self="pendingPasscodeRoom = null"
+      >
+        <div class="w-full max-w-sm rounded-2xl bg-[#EFE5D3] border border-[#D8C7B0] p-4 shadow-2xl text-[#3C2C1E] space-y-3">
+          <div class="flex items-center justify-between border-b border-[#D8C7B0] pb-2">
+            <h3 class="text-sm font-bold font-serif-title flex items-center gap-1.5">
+              <span>🔐</span>
+              <span>进入私密包厢 · {{ pendingPasscodeRoom.title || '雅座' }}</span>
+            </h3>
+            <button
+              type="button"
+              @click="pendingPasscodeRoom = null"
+              class="w-6 h-6 rounded-full bg-[#FAF4E8] border border-[#D8C7B0] text-xs cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+          <input
+            v-model="joinPasscodeInput"
+            type="password"
+            maxlength="12"
+            placeholder="请输入房间口令..."
+            @keydown.enter="confirmJoinPasscodeRoom"
+            class="w-full px-3 py-2 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] font-mono focus:outline-none focus:border-[#5C4533]"
+          />
+          <div v-if="joinPasscodeError" class="text-[11px] text-red-700 font-medium">
+            ⚠️ {{ joinPasscodeError }}
+          </div>
+          <div class="flex justify-end gap-2">
+            <button
+              type="button"
+              @click="pendingPasscodeRoom = null"
+              class="px-3.5 py-1.5 text-xs rounded-xl bg-[#FAF4E8] border border-[#D8C7B0] text-[#3C2C1E] cursor-pointer"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              @click="confirmJoinPasscodeRoom"
+              class="px-4 py-1.5 text-xs font-bold rounded-xl bg-gradient-to-r from-[#5C4533] to-[#433022] text-[#FAF4E8] border border-[#7D6049] cursor-pointer"
+            >
+              核验入座
+            </button>
+          </div>
         </div>
       </div>
     </Teleport>
@@ -1972,7 +2034,7 @@ if (!userProfile.avatar || userProfile.avatar === '🀄') {
 }
 const matchRecords = reactive<MatchRecord[]>(loadLocalRecords());
 const currentTheme = ref<TableTheme>(getGameTheme('yansan'));
-const soundOn = ref(true);
+const soundOn = ref(soundFX.enabled);
 
 const rooms = ref<any[]>([]);
 const chatInput = ref('');
@@ -1992,9 +2054,14 @@ let recordingAudioCtx: any = null;
 let voiceChunks: Blob[] = [];
 let recordingInterval: any = null;
 let activePlayingAudio: HTMLAudioElement | null = null;
+let sharedVoicePlayCtx: AudioContext | null = null;
 
 const newRoomTitle = ref('');
 const newRoomGame = ref<GameType>('yansan');
+const newRoomPasscode = ref('');
+const pendingPasscodeRoom = ref<any | null>(null);
+const joinPasscodeInput = ref('');
+const joinPasscodeError = ref('');
 
 // WebSocket and Packet Tracking for Termux diagnostic
 const isOnline = ref(typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -2562,7 +2629,7 @@ function onFullSeatGameStart(players: ScenePlayer[], roomId?: string, deal?: any
   }
 }
 
-function enterRoom(r: any) {
+function enterRoom(r: any, suppliedPasscode?: string) {
   if (!userProfile.isLoggedIn) {
     showAuthModal.value = true;
     soundFX.playTap();
@@ -2573,6 +2640,25 @@ function enterRoom(r: any) {
     promptInsufficientCoins(r.gameType, 'standard', reqCoins);
     return;
   }
+  if (r.hasPasscode && !suppliedPasscode) {
+    pendingPasscodeRoom.value = r;
+    joinPasscodeInput.value = '';
+    joinPasscodeError.value = '';
+    soundFX.playTap();
+    return;
+  }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({
+        type: 'room_join',
+        roomId: r.id,
+        playerId: userProfile.id,
+        playerName: userProfile.name,
+        rating: userProfile.rating,
+        passcode: suppliedPasscode || '',
+      }));
+    } catch {}
+  }
   isPracticeMode.value = false;
   activeRoomId.value = r.id;
   activeGameType.value = r.gameType;
@@ -2580,6 +2666,18 @@ function enterRoom(r: any) {
   showChatDrawer.value = false;
   currentView.value = 'arena';
   soundFX.playTap();
+}
+
+function confirmJoinPasscodeRoom() {
+  if (!pendingPasscodeRoom.value) return;
+  const code = joinPasscodeInput.value.trim();
+  if (!code) {
+    joinPasscodeError.value = '请输入房间口令';
+    return;
+  }
+  const target = pendingPasscodeRoom.value;
+  pendingPasscodeRoom.value = null;
+  enterRoom(target, code);
 }
 
 function switchGame(gt: GameType) {
@@ -2623,6 +2721,7 @@ function notifyPresence(gt: GameType | 'lobby' | '', mode?: string) {
           coins: userProfile.coins,
           rating: userProfile.rating,
           phone: userProfile.phone,
+          sessionToken: userProfile.sessionToken || '',
         })
       );
     } catch {}
@@ -2796,6 +2895,20 @@ function connectWs() {
       } else if (msg.type === 'scene_join_rejected') {
         promptInsufficientCoins(activeGameType.value, activeSceneMode.value, msg.requiredCoins || 100);
         returnToLobby();
+      } else if (msg.type === 'room_join_rejected') {
+        const failedRoom = rooms.value.find((rm) => rm.id === msg.roomId);
+        returnToLobby();
+        if (failedRoom) {
+          pendingPasscodeRoom.value = failedRoom;
+          joinPasscodeInput.value = '';
+          joinPasscodeError.value = msg.error || '私密房间口令不正确';
+        } else {
+          triggerSpeechBubble(`⚠️ ${msg.error || '加入房间失败'}`);
+        }
+      } else if (msg.type === 'room_updated') {
+        if (Array.isArray(msg.rooms)) {
+          rooms.value = msg.rooms;
+        }
       } else if (msg.type === 'scene_reconnect_ack') {
         if (isPracticeMode.value) return;
         if (!msg.failed && msg.room) {
@@ -3486,19 +3599,21 @@ function playVoiceBroadcast(audioUrl: string, sender: string, duration = 2) {
       duration: Math.max(1, duration),
     };
 
-    // 播放端使用 Web Audio API 提供二次响度提升 (2.5倍)，确保外放与小耳机清晰大声
+    // 播放端复用单一 Web Audio API 上下文提供响度提升，避免频繁创建导致浏览器上限耗尽
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioContextClass) {
-        const playCtx = new AudioContextClass();
-        if (playCtx.state === 'suspended') {
-          playCtx.resume();
+        if (!sharedVoicePlayCtx || sharedVoicePlayCtx.state === 'closed') {
+          sharedVoicePlayCtx = new AudioContextClass();
         }
-        const source = playCtx.createMediaElementSource(audio);
-        const gainNode = playCtx.createGain();
+        if (sharedVoicePlayCtx.state === 'suspended') {
+          sharedVoicePlayCtx.resume().catch(() => {});
+        }
+        const source = sharedVoicePlayCtx.createMediaElementSource(audio);
+        const gainNode = sharedVoicePlayCtx.createGain();
         gainNode.gain.value = 2.5; // 250% 播放端响度增强
         source.connect(gainNode);
-        gainNode.connect(playCtx.destination);
+        gainNode.connect(sharedVoicePlayCtx.destination);
       }
     } catch (e) {
       console.warn('Playback WebAudio gain boost fallback to native audio:', e);
@@ -3549,6 +3664,7 @@ function createRoomSubmit() {
       title: newRoomTitle.value.trim() || `${userProfile.name}的雅座`,
       gameType: newRoomGame.value,
       playerName: userProfile.name,
+      passcode: newRoomPasscode.value.trim(),
     }));
     addPacketLog('OUT', `ROOM_CREATE: ${newRoomGame.value}`);
   }
@@ -3556,6 +3672,7 @@ function createRoomSubmit() {
   currentTheme.value = getGameTheme(newRoomGame.value);
   showCreateModal.value = false;
   newRoomTitle.value = '';
+  newRoomPasscode.value = '';
   currentView.value = 'arena';
 }
 
@@ -3795,8 +3912,19 @@ function onThemeChange(th: TableTheme) {
 
 function toggleSound() {
   soundOn.value = !soundOn.value;
-  soundFX.enabled = soundOn.value;
-  if (soundOn.value) soundFX.playTap();
+  soundFX.setEnabled(soundOn.value);
+  if (!soundOn.value) {
+    if (activePlayingAudio) {
+      try {
+        activePlayingAudio.pause();
+      } catch {}
+      activePlayingAudio = null;
+    }
+    activePlayingVoice.value = null;
+    soundFX.stopVoiceChatPlayback();
+  } else {
+    soundFX.playTap();
+  }
 }
 
 function onVisibilityChange() {

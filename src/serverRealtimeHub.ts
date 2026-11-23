@@ -1,5 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import { loadDatabase, saveDatabase } from './serverStorage.ts';
+import { loadDatabase, saveDatabase, recordServerPointsTx } from './serverStorage.ts';
 import {
   ackServerUnreadSettlements,
   advanceServerBookingCarriage,
@@ -27,7 +27,15 @@ import {
   detectYansanSpecialHolders,
   type YansanCard,
 } from './engine/yansanRules.ts';
-import { autoArrangeThirteen, compareTwoPlayers, type SSSCard } from './engine/shisanshuiRules.ts';
+import {
+  autoArrangeThirteen,
+  compareTwoPlayers,
+  detectSpecialHand,
+  evaluate3CardTier,
+  evaluate5CardTier,
+  isFoulHand,
+  type SSSCard,
+} from './engine/shisanshuiRules.ts';
 
 export type { AuthoritativeBoardState };
 
@@ -423,6 +431,17 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             profile.level = Math.max(1, Math.min(10, Math.floor(profile.rating / 500)));
           }
           profile.updatedAt = Date.now();
+          if (delta !== 0) {
+            const gLabel = gameType === 'mahjong' ? '经典国标麻将' : gameType === 'shisanshui' ? '水镜十三水' : '经典烟三';
+            recordServerPointsTx(
+              db,
+              pl.id,
+              delta >= 0 ? 'game_win' : 'game_loss',
+              `${gLabel} · 牌桌结算 (${delta >= 0 ? '+' : ''}${delta})`,
+              delta,
+              profile.coins
+            );
+          }
           dirty = true;
           broadcast({
             type: 'user_coins_updated',
@@ -556,6 +575,20 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
     bs.moveCount = room.moveCount;
     bs.updatedAt = Date.now();
 
+    const kongScores: [number, number, number, number] =
+      Array.isArray(bs.seatKongScores) && bs.seatKongScores.length === 4
+        ? [
+            Number(bs.seatKongScores[0]) || 0,
+            Number(bs.seatKongScores[1]) || 0,
+            Number(bs.seatKongScores[2]) || 0,
+            Number(bs.seatKongScores[3]) || 0,
+          ]
+        : [0, 0, 0, 0];
+    const hasKongDeltas = kongScores.some((k) => k !== 0);
+    if (hasKongDeltas) {
+      settleRoomCoins(room, kongScores, 'mahjong');
+    }
+
     resetSceneRoomReadyAndCleanDisconnected(room.id);
 
     const stalematePayload = {
@@ -564,6 +597,8 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
       reason: 'wall_exhausted',
       message: reasonMsg,
       msg: reasonMsg,
+      seatKongScores: kongScores,
+      netCoinsPerSeat: kongScores,
     };
 
     broadcast({
@@ -1161,6 +1196,16 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             msg.gameType === 'yansan' || msg.gameType === 'shisanshui' || msg.gameType === 'mahjong'
               ? msg.gameType
               : 'lobby';
+          if (msg.sessionToken && msg.playerId) {
+            try {
+              const db = loadDatabase();
+              const prof = db.profiles?.[msg.playerId];
+              if (prof && prof.sessionToken && prof.sessionToken === msg.sessionToken && !prof.isBanned) {
+                (ws as any).authenticatedUserId = prof.id;
+                (ws as any).userId = prof.id;
+              }
+            } catch {}
+          }
           presenceTracker.updateClientGame((ws as any).socketId, targetGame, msg.sceneMode);
           if (msg.playerId) {
             presenceTracker.recordClient((ws as any).socketId, {
@@ -1196,10 +1241,31 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           return;
         }
 
+        const resolveBookingUserId = (rawId?: string, token?: string): { ok: boolean; userId: string; error?: string } => {
+          const uid = rawId || (ws as any).authenticatedUserId || (ws as any).userId || 'guest';
+          const db = loadDatabase();
+          if (token && uid) {
+            const prof = db.profiles?.[uid];
+            if (prof && prof.sessionToken && prof.sessionToken === token && !prof.isBanned) {
+              (ws as any).authenticatedUserId = prof.id;
+              return { ok: true, userId: prof.id };
+            }
+          }
+          if (uid && db.profiles?.[uid]?.password && (ws as any).authenticatedUserId !== uid) {
+            return { ok: false, userId: uid, error: '账号会话校验未通过，请重新登录或刷新重连' };
+          }
+          return { ok: true, userId: (ws as any).authenticatedUserId || uid };
+        };
+
         // 预约场火车专列权威同步（多端一致性、实时占座、13张防作弊校验、模拟与06:00真实入账）
         if (msg.type === 'booking_get_carriage') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const userId = msg.playerId || msg.userId || (ws as any).userId || 'guest';
+          const authCheck = resolveBookingUserId(msg.playerId || msg.userId, msg.sessionToken);
+          if (!authCheck.ok) {
+            ws.send(JSON.stringify({ type: 'booking_error', action: 'get_carriage', error: authCheck.error, serverTs: Date.now() }));
+            return;
+          }
+          const userId = authCheck.userId;
           const state = await getServerBookingState({
             sceneMode,
             userId,
@@ -1227,7 +1293,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_select_seat') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const userId = msg.playerId || msg.userId || 'guest';
+          const authCheck = resolveBookingUserId(msg.playerId || msg.userId, msg.sessionToken);
+          if (!authCheck.ok) {
+            ws.send(JSON.stringify({ type: 'booking_error', action: 'select_seat', error: authCheck.error, serverTs: Date.now() }));
+            return;
+          }
+          const userId = authCheck.userId;
           const res = await selectServerBookingSeat({
             sceneMode,
             userId,
@@ -1271,7 +1342,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_pick_table') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const userId = msg.playerId || msg.userId || 'guest';
+          const authCheck = resolveBookingUserId(msg.playerId || msg.userId, msg.sessionToken);
+          if (!authCheck.ok) {
+            ws.send(JSON.stringify({ type: 'booking_error', action: 'pick_table', error: authCheck.error, serverTs: Date.now() }));
+            return;
+          }
+          const userId = authCheck.userId;
           const res = await pickServerBookingTable({
             sceneMode,
             userId,
@@ -1305,7 +1381,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_submit_hand' || msg.type === 'booking_submit') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const userId = msg.playerId || msg.userId || 'guest';
+          const authCheck = resolveBookingUserId(msg.playerId || msg.userId, msg.sessionToken);
+          if (!authCheck.ok) {
+            ws.send(JSON.stringify({ type: 'booking_error', action: 'submit_hand', error: authCheck.error, serverTs: Date.now() }));
+            return;
+          }
+          const userId = authCheck.userId;
           const res = await submitServerBookingHand({
             sceneMode,
             userId,
@@ -1360,7 +1441,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_advance_carriage') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const userId = msg.playerId || msg.userId || 'guest';
+          const authCheck = resolveBookingUserId(msg.playerId || msg.userId, msg.sessionToken);
+          if (!authCheck.ok) {
+            ws.send(JSON.stringify({ type: 'booking_error', action: 'advance_carriage', error: authCheck.error, serverTs: Date.now() }));
+            return;
+          }
+          const userId = authCheck.userId;
           const res = await advanceServerBookingCarriage({
             sceneMode,
             userId,
@@ -1391,7 +1477,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
         if (msg.type === 'booking_simulate_settle') {
           const sceneMode = msg.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
-          const userId = msg.playerId || msg.userId || 'guest';
+          const authCheck = resolveBookingUserId(msg.playerId || msg.userId, msg.sessionToken);
+          if (!authCheck.ok) {
+            ws.send(JSON.stringify({ type: 'booking_error', action: 'simulate_settle', error: authCheck.error, serverTs: Date.now() }));
+            return;
+          }
+          const userId = authCheck.userId;
           const res = await simulateServerBookingSettlement({
             sceneMode,
             userId,
@@ -1696,25 +1787,35 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
               (pl) => (pl.id && p.id && pl.id === p.id) || (pl as any).socketId === currentSocketId
             );
             if (isPlayerInOther && (otherRoom.gameType !== gType || otherRoom.sceneMode !== sMode)) {
-              otherRoom.players = otherRoom.players.filter(
-                (pl) => pl.id !== p.id && (pl as any).socketId !== currentSocketId
-              );
-              if (otherRoom.players.length === 0) {
-                sceneWaitingRooms.delete(otherId);
+              if (otherRoom.status === 'playing' || otherRoom.status === 'starting') {
+                const matchedOld = otherRoom.players.find(
+                  (pl) => (pl.id && p.id && pl.id === p.id) || (pl as any).socketId === currentSocketId
+                );
+                if (matchedOld) {
+                  matchedOld.isDisconnected = true;
+                  matchedOld.isAutoManaged = true;
+                }
               } else {
-                otherRoom.players.forEach((pl, idx) => {
-                  pl.seat = idx;
-                });
-                if (otherRoom.status === 'waiting') {
-                  broadcast({
-                    type: 'scene_room_update',
-                    roomId: otherRoom.id,
-                    gameType: otherRoom.gameType,
-                    sceneMode: otherRoom.sceneMode,
-                    players: otherRoom.players,
-                    maxPlayers: otherRoom.maxPlayers,
-                    status: otherRoom.status,
+                otherRoom.players = otherRoom.players.filter(
+                  (pl) => pl.id !== p.id && (pl as any).socketId !== currentSocketId
+                );
+                if (otherRoom.players.length === 0) {
+                  sceneWaitingRooms.delete(otherId);
+                } else {
+                  otherRoom.players.forEach((pl, idx) => {
+                    pl.seat = idx;
                   });
+                  if (otherRoom.status === 'waiting') {
+                    broadcast({
+                      type: 'scene_room_update',
+                      roomId: otherRoom.id,
+                      gameType: otherRoom.gameType,
+                      sceneMode: otherRoom.sceneMode,
+                      players: otherRoom.players,
+                      maxPlayers: otherRoom.maxPlayers,
+                      status: otherRoom.status,
+                    });
+                  }
                 }
               }
             }
@@ -2218,68 +2319,92 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
         if (msg.type === 'room_create') {
           const id = `RM-${Math.floor(207 + Math.random() * 800)}`;
           const gType = msg.gameType || 'yansan';
-          const newRoom = {
+          const cleanPasscode = typeof msg.passcode === 'string' ? msg.passcode.trim().slice(0, 6) : '';
+          const pId = msg.playerId || (ws as any).authenticatedUserId || `P-${Date.now()}`;
+          const newRoom: any = {
             id,
             title: msg.title || `${msg.playerName || '茗局雅客'}的牌局`,
             gameType: gType,
             status: 'playing',
-            players: [{ id: `P-${Date.now()}`, name: msg.playerName || '茗局雅客', rating: 1900, seat: 0 }],
+            hasPasscode: Boolean(cleanPasscode),
+            _passcode: cleanPasscode,
+            players: [{ id: pId, name: msg.playerName || '茗局雅客', rating: 1900, seat: 0, socketId: (ws as any).socketId }],
             spectators: 1,
             turnSeat: 0,
             moveCount: 0,
-            modeLabel: '实时 WebSocket 牌桌',
+            modeLabel: cleanPasscode ? '私密口令牌桌' : '实时 WebSocket 牌桌',
             chat: [
               {
                 id: `c-${Date.now()}`,
                 sender: '系统司仪',
-                text: `房间 ${id} 已建立，欢迎各路牌友入席！`,
+                text: `房间 ${id} 已建立${cleanPasscode ? '（已设私密口令）' : ''}，欢迎各路牌友入席！`,
                 timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
               },
             ],
             boardState: createDefaultBoardState(id, gType),
           };
           rooms.set(id, newRoom);
-          broadcast({ type: 'room_created', room: newRoom, rooms: Array.from(rooms.values()) });
+          const safeRooms = Array.from(rooms.values()).map(({ _passcode: _p, ...rest }: any) => rest);
+          const { _passcode: _pSelf, ...safeNewRoom } = newRoom;
+          broadcast({ type: 'room_created', room: safeNewRoom, rooms: safeRooms });
           return;
         }
 
         if (msg.type === 'room_join') {
-          const room = rooms.get(msg.roomId);
+          const room: any = rooms.get(msg.roomId);
           if (room) {
+            if (room._passcode && String(msg.passcode || '').trim() !== room._passcode) {
+              ws.send(
+                JSON.stringify({
+                  type: 'room_join_rejected',
+                  roomId: room.id,
+                  reason: 'invalid_passcode',
+                  error: '私密房间口令不正确，请核对后再试',
+                })
+              );
+              return;
+            }
             const playerName = msg.playerName || '牌友';
-            const existingPlayer = room.players.find((p: any) => p.name === playerName);
+            const pId = msg.playerId || (ws as any).authenticatedUserId || `P-${Date.now()}`;
+            const existingPlayer = room.players.find((p: any) => p.id === pId || p.name === playerName);
             if (!existingPlayer && room.players.length < 4) {
               room.players.push({
-                id: `P-${Date.now()}`,
+                id: pId,
                 name: playerName,
                 rating: msg.rating || 1900,
                 seat: room.players.length,
+                socketId: (ws as any).socketId,
               });
             } else {
+              if (existingPlayer) existingPlayer.socketId = (ws as any).socketId;
               room.spectators += 1;
             }
-            broadcast({ type: 'room_updated', room, rooms: Array.from(rooms.values()) });
+            const safeRooms = Array.from(rooms.values()).map(({ _passcode: _p, ...rest }: any) => rest);
+            const { _passcode: _pSelf, ...safeRoom } = room;
+            broadcast({ type: 'room_updated', room: safeRoom, rooms: safeRooms });
           }
           return;
         }
 
         if (msg.type === 'room_leave') {
-          const room = rooms.get(msg.roomId);
+          const room: any = rooms.get(msg.roomId);
           if (room) {
             room.spectators = Math.max(0, room.spectators - 1);
-            broadcast({ type: 'room_updated', room, rooms: Array.from(rooms.values()) });
+            const safeRooms = Array.from(rooms.values()).map(({ _passcode: _p, ...rest }: any) => rest);
+            const { _passcode: _pSelf, ...safeRoom } = room;
+            broadcast({ type: 'room_updated', room: safeRoom, rooms: safeRooms });
           }
           return;
         }
 
         if (msg.type === 'room_reconnect') {
-          const room = rooms.get(msg.roomId);
+          const room: any = rooms.get(msg.roomId);
           if (room) {
             try {
               const pId = (ws as any).scenePlayerId;
               const matched = room.players?.find((p: any) => p.id === pId || p.socketId === (ws as any).socketId);
               const seat = matched && typeof matched.seat === 'number' ? matched.seat : -1;
-              const { deal: _d, ...roomWithoutDeal } = room;
+              const { deal: _d, _passcode: _pSelf, ...roomWithoutDeal } = room;
               ws.send(
                 JSON.stringify({
                   type: 'reconnect_ack',
@@ -2327,7 +2452,10 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           if (room) {
             const evt = msg.event || {};
             const p = { ...evt, ...(msg.payload || {}) };
-            const seat =
+            const action = p.action || evt.action || 'play';
+            const combo = p.combo || evt.combo || null;
+
+            const requestedSeat =
               typeof msg.seat === 'number'
                 ? msg.seat
                 : typeof evt.seat === 'number'
@@ -2335,13 +2463,15 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                   : typeof p.seat === 'number'
                     ? p.seat
                     : 0;
-            const action = p.action || evt.action || 'play';
-            const combo = p.combo || evt.combo || null;
-
-            if (!room.boardState) {
-              room.boardState = createDefaultBoardState(room.id, room.gameType);
-            }
-            const bs = room.boardState;
+            const wsSocketId = (ws as any).socketId;
+            const wsPlayerId = (ws as any).authenticatedUserId || (ws as any).scenePlayerId;
+            const senderPlayer = Array.isArray(room.players)
+              ? room.players.find(
+                  (pl: any) =>
+                    (pl.socketId && wsSocketId && pl.socketId === wsSocketId) ||
+                    (pl.id && wsPlayerId && pl.id === wsPlayerId)
+                )
+              : undefined;
 
             const mutatingActions = new Set([
               'play',
@@ -2357,6 +2487,28 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
               'surrender',
               'shisanshui_submit_hand',
             ]);
+
+            if (!senderPlayer && mutatingActions.has(action)) {
+              return;
+            }
+
+            let seat = senderPlayer && typeof senderPlayer.seat === 'number' ? senderPlayer.seat : requestedSeat;
+            // Allow host/player to drive non-human AI bots in hybrid rooms, while forbidding spoofing other human players
+            if (
+              senderPlayer &&
+              requestedSeat !== senderPlayer.seat &&
+              Array.isArray(room.players) &&
+              room.players[requestedSeat] &&
+              isBotLikePlayer(room.players[requestedSeat])
+            ) {
+              seat = requestedSeat;
+            }
+
+            if (!room.boardState) {
+              room.boardState = createDefaultBoardState(room.id, room.gameType);
+            }
+            const bs = room.boardState;
+
             if (bs.phase === 'ended' && mutatingActions.has(action)) {
               return;
             }
@@ -3372,6 +3524,9 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             // 3. 十三张 / 十三水权威裁决中枢
             // ==========================================
             else if (action === 'shisanshui_submit_hand') {
+              if (bs.shisanshuiSubmissions?.[seat]) {
+                return;
+              }
               const headArr = p.tiers?.head || p.rawTiers?.front;
               const midArr = p.tiers?.mid || p.rawTiers?.mid;
               const tailArr = p.tiers?.tail || p.rawTiers?.back;
@@ -3391,20 +3546,64 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                 return;
               }
               const authSeatCards: any[] | undefined = (room as any).deal?.seatCards?.[seat];
+              const cardMap = new Map<string, any>();
               if (Array.isArray(authSeatCards) && authSeatCards.length === 13) {
-                const authIds = new Set(authSeatCards.map((c: any) => c.id));
-                if (!submittedIds.every((id) => authIds.has(id))) {
+                for (const ac of authSeatCards) cardMap.set(ac.id, ac);
+                if (!submittedIds.every((id) => cardMap.has(id))) {
                   return;
                 }
               }
+              const reconstruct = (arr: any[]) =>
+                arr.map((c: any) => cardMap.get(c.id) || c);
+              const suitValMap: Record<string, number> = { '♠': 4, '♥': 3, '♣': 2, '♦': 1 };
+              const toSss = (c: any): SSSCard => ({
+                id: c.id,
+                rank: Number(c.rank),
+                suitVal: typeof c.suitVal === 'number' ? c.suitVal : (suitValMap[c.suit] || 1),
+                label: c.label,
+                suit: c.suit,
+                isRed: Boolean(c.isRed),
+              });
+              const authHeadRaw = reconstruct(headArr);
+              const authMidRaw = reconstruct(midArr);
+              const authBackRaw = reconstruct(tailArr);
+              const sssHead = authHeadRaw.map(toSss);
+              const sssMid = authMidRaw.map(toSss);
+              const sssBack = authBackRaw.map(toSss);
+              const serverSpecial = detectSpecialHand([...sssHead, ...sssMid, ...sssBack]);
+              if (!serverSpecial && isFoulHand(sssHead, sssMid, sssBack)) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'game_event',
+                    roomId: room.id,
+                    seat,
+                    event: {
+                      action: 'shisanshui_submit_rejected',
+                      reason: 'foul_hand',
+                      message: '当前摆牌倒水相公（尾道需 >= 中道 >= 头道），请调整后提交',
+                    },
+                    boardState: bs,
+                  })
+                );
+                return;
+              }
+
               if (!bs.shisanshuiSubmissions) {
                 bs.shisanshuiSubmissions = {};
               }
               bs.shisanshuiSubmissions[seat] = {
                 seat,
-                tiers: p.tiers,
-                rawTiers: p.rawTiers,
-                isSpecial: p.isSpecial,
+                tiers: { head: sssHead, mid: sssMid, tail: sssBack },
+                rawTiers: {
+                  front: authHeadRaw,
+                  mid: authMidRaw,
+                  back: authBackRaw,
+                  frontLabel: evaluate3CardTier(sssHead).name,
+                  midLabel: evaluate5CardTier(sssMid).name,
+                  backLabel: evaluate5CardTier(sssBack).name,
+                  specialHand: serverSpecial,
+                },
+                isSpecial: Boolean(serverSpecial),
                 submittedAt: Date.now(),
               };
               const submittedCount = Object.keys(bs.shisanshuiSubmissions).length;
@@ -3421,14 +3620,14 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                   seat,
                   submittedCount,
                   targetCount,
-                  isSpecial: Boolean(p.isSpecial),
+                  isSpecial: Boolean(serverSpecial),
                 },
                 payload: {
                   action: 'shisanshui_submit_hand',
                   seat,
                   submittedCount,
                   targetCount,
-                  isSpecial: Boolean(p.isSpecial),
+                  isSpecial: Boolean(serverSpecial),
                 },
                 boardState: bs,
               });

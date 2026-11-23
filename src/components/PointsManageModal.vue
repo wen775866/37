@@ -350,6 +350,7 @@ import { resolveApiUrl } from '../utils/networkConfig';
 import {
   saveLocalProfile,
   loadPointsTransactions,
+  fetchCloudPointsLedger,
   recordPointsTx,
   PointsTransaction,
 } from '../utils/storage';
@@ -486,14 +487,20 @@ const userKey = computed(() => props.profile.phone || props.profile.id);
 
 const transactions = ref<PointsTransaction[]>(loadPointsTransactions(userKey.value));
 
-onMounted(() => {
+async function refreshLedger() {
   transactions.value = loadPointsTransactions(userKey.value);
+  const merged = await fetchCloudPointsLedger(userKey.value);
+  transactions.value = merged;
+}
+
+onMounted(() => {
+  refreshLedger();
 });
 
 watch(
   [() => props.profile.coins, () => userKey.value],
   () => {
-    transactions.value = loadPointsTransactions(userKey.value);
+    refreshLedger();
   }
 );
 
@@ -520,7 +527,6 @@ async function submitTransfer() {
         recipientId: searchedUser.value.id,
         recipientPhone: searchedUser.value.phone,
         amount: amt,
-        clientCoins: userCoins.value,
       }),
     });
     const data = await res.json();

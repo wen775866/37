@@ -93,6 +93,25 @@
         class="w-full h-full absolute inset-0 block cursor-pointer"
       ></canvas>
 
+      <!-- 非阻塞牌桌播报横幅（报单 / 全场绝大） -->
+      <div
+        v-if="unbeatableNotice || baodanNotice"
+        class="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1 max-w-[90%]"
+      >
+        <div
+          v-if="unbeatableNotice"
+          class="px-3 py-1 rounded-xl bg-amber-950/90 border border-amber-400/70 text-amber-200 text-xs font-bold shadow-lg backdrop-blur-sm text-center"
+        >
+          {{ unbeatableNotice }}
+        </div>
+        <div
+          v-if="baodanNotice"
+          class="px-3 py-1 rounded-xl bg-red-950/90 border border-red-400/70 text-red-200 text-xs font-bold shadow-lg backdrop-blur-sm text-center"
+        >
+          {{ baodanNotice }}
+        </div>
+      </div>
+
 
 
       <!-- Rules Explanation Modal -->
@@ -638,7 +657,7 @@ const emit = defineEmits<{
   (e: 'restart'): void;
   (e: 'fx', payload: any): void;
   (e: 'status', payload: any): void;
-  (e: 'exit'): void;
+  (e: 'exit', force?: boolean): void;
 }>();
 
 function emitStatus() {
@@ -1996,7 +2015,9 @@ function checkGameFinishAfterPlay(seat: number, isRemote: boolean = false) {
   if (isQiangGong) {
     // 强攻规则：只要强攻者打完，或者其他任意一家打完，游戏立即结束！
     shouldEnd = finishedSeats.length >= 1;
-  } else if (spade3Seat.value !== spadeASeat.value) {
+  } else {
+    if (spade3Seat.value === null || spadeASeat.value === null) return;
+    if (spade3Seat.value !== spadeASeat.value) {
     // 2v2 经典同盟对决：
     // 当两个农民或者两个同盟的先打完手牌就立即结束游戏！
     const spadeFinishedCount = finishedSeats.filter(
@@ -2016,6 +2037,7 @@ function checkGameFinishAfterPlay(seat: number, isRemote: boolean = false) {
     // 双煞与第3位平民必须继续对局，争夺第3个出完手牌的席位（看谁第三个打完手牌）！
     // 只有当：双煞出清(已锁定1/2/3名)、或者3位平民全部出清(双煞第4名垫底)、或者已决出前三名（finishedSeats.length >= 3）时才结束游戏！
     shouldEnd = soloFinished || farmerFinishedCount >= 3 || finishedSeats.length >= 3;
+    }
   }
 
   if (shouldEnd) {
@@ -2629,10 +2651,10 @@ function onPointerDown(e: PointerEvent) {
       const sTop = visToAbs(2);
       const sRight = visToAbs(3);
       const seats = [
-        { idx: sBottom, x: 16, y: 430 - 98, w: 154, h: 94 },
-        { idx: sLeft, x: 16, y: 92, w: 154, h: 94 },
-        { idx: sTop, x: 680 / 2 - 77, y: 12, w: 154, h: 94 },
-        { idx: sRight, x: 680 - 170, y: 92, w: 154, h: 94 },
+        { idx: sBottom, x: 16, y: 430 - 66, w: 154, h: 56 },
+        { idx: sLeft, x: 16, y: 92, w: 154, h: 56 },
+        { idx: sTop, x: 680 / 2 - 77, y: 12, w: 154, h: 56 },
+        { idx: sRight, x: 680 - 170, y: 92, w: 154, h: 56 },
       ];
       const clicked = seats.find((s) => coords.x >= s.x && coords.x <= s.x + s.w && coords.y >= s.y && coords.y <= s.y + s.h);
       if (clicked) {

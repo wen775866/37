@@ -1,9 +1,14 @@
 <template>
   <Teleport to="body">
-    <div class="fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-start sm:items-center justify-center p-2 sm:p-4 select-none overflow-hidden">
+    <div
+      :class="isRotated90
+        ? 'auth-modal-rotated-full flex items-center justify-center p-2 select-none overflow-hidden'
+        : 'fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-start sm:items-center justify-center p-2 sm:p-4 select-none overflow-hidden'"
+    >
       <!-- Modal Box: Auto-adapts to mobile height with permanently visible action footer -->
       <div
-        class="w-full max-w-[450px] max-h-[96vh] sm:max-h-[88vh] flex flex-col rounded-2xl sm:rounded-3xl bg-[#EFE5D3] border border-[#D8C7B0] shadow-2xl overflow-hidden relative text-[#3C2C1E]"
+        :class="isRotated90 ? 'w-full max-w-[460px] max-h-[92dvw]' : 'w-full max-w-[450px] max-h-[96vh] sm:max-h-[88vh]'"
+        class="flex flex-col rounded-2xl sm:rounded-3xl bg-[#EFE5D3] border border-[#D8C7B0] shadow-2xl overflow-hidden relative text-[#3C2C1E]"
       >
         <!-- 1. Top Header Bar (Fixed / Shrink-0) -->
         <div class="flex items-center justify-between px-3.5 py-2.5 sm:px-5 sm:py-3 border-b border-[#D8C7B0] shrink-0 gap-2 bg-[#FAF4E8]">
@@ -54,7 +59,7 @@
         </div>
 
         <!-- 3. Scrollable Input Body (Middle Area) -->
-        <div class="flex-1 overflow-y-auto px-3.5 py-2 sm:px-5 min-h-0 space-y-2.5 overscroll-contain">
+        <div class="flex-1 overflow-y-auto px-3.5 py-2 pb-8 scroll-pb-24 sm:px-5 min-h-0 space-y-2.5 overscroll-contain">
           <!-- A. Logged In Profile Card Mode -->
           <div v-if="isLoggedIn" class="py-1 space-y-3">
             <div class="p-3 rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] flex items-center justify-between shadow-xs">
@@ -258,9 +263,12 @@ import {
 import { soundFX } from '../utils/sound';
 import { resolveApiUrl } from '../utils/networkConfig';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   profile: UserProfile;
-}>();
+  isRotated90?: boolean;
+}>(), {
+  isRotated90: false,
+});
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -427,14 +435,43 @@ async function submitRegister() {
   }
 }
 
-function handleSaveProfile() {
+async function handleSaveProfile() {
+  errorMessage.value = '';
   const newName = editName.value.trim();
   if (newName.length > 3) {
     errorMessage.value = '昵称长度不能超过3个字';
     return;
   }
-  currentProfile.name = newName || currentProfile.name;
-  currentProfile.avatar = editAvatar.value;
+  const targetName = newName || currentProfile.name;
+  const targetAvatar = editAvatar.value;
+
+  if (currentProfile.isLoggedIn && currentProfile.sessionToken) {
+    try {
+      const res = await fetch(resolveApiUrl('/api/user/profile'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: targetName, avatar: targetAvatar }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        errorMessage.value = data?.error || '保存资料失败，请稍后重试';
+        return;
+      }
+      if (data.profile) {
+        Object.assign(currentProfile, { ...data.profile, isLoggedIn: true, sessionToken: currentProfile.sessionToken });
+      } else {
+        currentProfile.name = targetName;
+        currentProfile.avatar = targetAvatar;
+      }
+    } catch {
+      errorMessage.value = '网络异常，未能同步个人资料到云端';
+      return;
+    }
+  } else {
+    currentProfile.name = targetName;
+    currentProfile.avatar = targetAvatar;
+  }
+
   saveLocalProfile(currentProfile);
 
   const accounts = getRegisteredAccounts();
@@ -477,5 +514,17 @@ onMounted(() => {
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+.auth-modal-rotated-full {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100dvh;
+  height: 100dvw;
+  transform-origin: 0 0;
+  transform: rotate(90deg) translateY(-100%);
+  z-index: 120;
+  background-color: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
 }
 </style>

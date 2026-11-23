@@ -174,6 +174,9 @@ class SoundEffects {
 
   public setEnabled(e: boolean) {
     this.enabled = e;
+    if (!e) {
+      this.stopCurrentVoice();
+    }
     if (typeof window !== 'undefined') {
       try {
         localStorage.setItem('teahouse_sound_enabled', String(e));
@@ -1087,9 +1090,12 @@ class SoundEffects {
         if (res.ok) {
           const buf = await res.arrayBuffer();
           if (ctx && buf.byteLength > 200) {
-            ctx.decodeAudioData(buf, (decoded) => {
-              this.ttsBufferCache.set(audioPath, decoded);
-            });
+            ctx
+              .decodeAudioData(buf.slice(0))
+              .then((decoded) => {
+                this.ttsBufferCache.set(audioPath, decoded);
+              })
+              .catch(() => {});
           }
         }
       } catch {}

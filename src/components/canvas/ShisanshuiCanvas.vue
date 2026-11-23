@@ -326,10 +326,10 @@
         <div class="h-11 shrink-0 flex items-center justify-between border-b border-white/10 px-2 pb-1.5 gap-2">
           <!-- 左侧：标题与场次标识 -->
           <div class="flex items-center gap-2 shrink-0">
-            <h3 class="text-xs sm:text-sm font-black text-black font-serif-title flex items-center gap-1.5">
+            <h3 class="text-xs sm:text-sm font-black text-amber-100 font-serif-title flex items-center gap-1.5">
               <span>⚔️</span>
               <span>比水总谱</span>
-              <span class="text-[10px] text-black font-sans font-medium hidden sm:inline">(田字全景对决)</span>
+              <span class="text-[10px] text-amber-200/80 font-sans font-medium hidden sm:inline">(田字全景对决)</span>
             </h3>
             <span class="text-[10px] px-2 py-0.5 rounded-full bg-red-950/50 text-red-400 border border-red-500/50 font-mono font-bold">
               {{ isEightPlayer ? (showdownPage === 0 ? '八人场 · 第 1/2 页 (前四席)' : '八人场 · 第 2/2 页 (后四席)') : '四人场 · 四席田字全景' }}
@@ -341,12 +341,16 @@
             <div class="flex items-center gap-1.5">
               <span class="text-[10px] text-[#A89887] hidden sm:inline">本局总净水:</span>
               <span
-                class="text-sm sm:text-base font-black font-mono tracking-tight text-black"
+                class="text-sm sm:text-base font-black font-mono tracking-tight"
+                :class="totalScore >= 0 ? 'text-emerald-300' : 'text-red-300'"
               >
                 {{ totalScore >= 0 ? `+${totalScore}` : totalScore }}
-                <span class="text-[10px] text-black font-sans font-bold">水</span>
+                <span class="text-[10px] text-amber-200 font-sans font-bold">水</span>
               </span>
-              <span class="text-xs font-mono font-bold text-black ml-1">
+              <span
+                class="text-xs font-mono font-bold ml-1"
+                :class="totalScore >= 0 ? 'text-amber-300' : 'text-red-300'"
+              >
                 🪙 {{ totalScore >= 0 ? `+${totalScore}` : `${totalScore}` }} 分
               </span>
             </div>
@@ -395,11 +399,11 @@
           v-if="isEightPlayer && showdownPage === 1"
           class="shrink-0 px-2.5 py-1 my-1 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-[11px]"
         >
-          <span class="font-bold text-black flex items-center gap-1">
+          <span class="font-bold text-amber-300 flex items-center gap-1">
             <span>👑 本家手牌提示:</span>
             <span class="text-white font-normal font-mono">头道 [{{ frontTierLabel }}] · 中道 [{{ midTierLabel }}] · 尾道 [{{ backTierLabel }}]</span>
           </span>
-          <span class="font-mono font-bold text-black">总分: {{ totalScore >= 0 ? `+${totalScore}` : totalScore }} 水</span>
+          <span class="font-mono font-bold text-amber-200">总分: {{ totalScore >= 0 ? `+${totalScore}` : totalScore }} 水</span>
         </div>
 
         <!-- 田字型四格对决核心区 (2列 × 2行) -->
@@ -420,7 +424,7 @@
             <div class="flex items-center justify-between pb-1 mb-1 border-b border-white/10 shrink-0 text-xs">
               <div class="flex items-center gap-1.5 truncate">
                 <span class="text-sm shrink-0">{{ p.avatar }}</span>
-                <span :class="p.isMe ? 'text-black font-extrabold' : 'text-[#D6C7B2] font-bold'" class="truncate text-xs sm:text-sm font-serif-title">
+                <span :class="p.isMe ? 'text-amber-300 font-extrabold' : 'text-[#D6C7B2] font-bold'" class="truncate text-xs sm:text-sm font-serif-title">
                   {{ p.name }}
                 </span>
                 <span v-if="p.isMe" class="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-400 text-black border border-amber-500 font-mono font-bold shrink-0">
@@ -458,7 +462,7 @@
                 }"
               >
                 <div class="w-12 sm:w-14 shrink-0 flex flex-col justify-center leading-tight z-10 pr-0.5">
-                  <span class="text-black font-black text-[11px] sm:text-xs tracking-tight">头道</span>
+                  <span class="text-amber-200 font-black text-[11px] sm:text-xs tracking-tight">头道</span>
                   <span class="text-white/85 font-bold truncate text-[9px] sm:text-[10px] mt-0.5">{{ p.frontLabel }}</span>
                 </div>
 
@@ -1268,6 +1272,13 @@ const gracePeriodSeconds = ref(0);
 let graceTimer: any = null;
 const hasHandled0600Today = ref(false);
 let lastCountdownCycleKey = '';
+let serverTimeOffsetMs = 0;
+
+function syncServerClock(serverTs?: number) {
+  if (typeof serverTs === 'number' && Number.isFinite(serverTs) && serverTs > 0) {
+    serverTimeOffsetMs = serverTs - Date.now();
+  }
+}
 
 const isOnlineBooking = computed(() => isBookingScene.value && !props.isPracticeMode);
 
@@ -1309,7 +1320,11 @@ function syncLocalBookingArchives(mode: 'four-booking' | 'eight-booking') {
 function sendBookingWs(payload: Record<string, any>): boolean {
   if (!props.ws || props.ws.readyState !== WebSocket.OPEN) return false;
   try {
-    props.ws.send(JSON.stringify(payload));
+    const withAuth =
+      props.currentUser?.sessionToken && !payload.sessionToken
+        ? { ...payload, sessionToken: props.currentUser.sessionToken }
+        : payload;
+    props.ws.send(JSON.stringify(withAuth));
     return true;
   } catch {
     return false;
@@ -1452,6 +1467,7 @@ async function fetchServerBookingState(
     }
     const resp = await apiFetch(`/api/booking/carriage?${params.toString()}`);
     const data = await resp.json();
+    syncServerClock(data?.serverTs);
     if (data?.carriage) {
       applyServerBookingState(
         data.carriage,
@@ -1485,7 +1501,8 @@ const isCurrentHandFoul = computed(() => {
 });
 
 function updateBookingCountdown() {
-  const cd = calculateNext0600Countdown();
+  const calibratedNow = new Date(Date.now() + serverTimeOffsetMs);
+  const cd = calculateNext0600Countdown(calibratedNow);
   if (gracePeriodActive.value) {
     bookingCountdownText.value = `⏰ 延时理牌中: ${gracePeriodSeconds.value}秒`;
   } else {
@@ -1495,7 +1512,7 @@ function updateBookingCountdown() {
 
   if (!isBookingScene.value) return;
 
-  const now = new Date();
+  const now = calibratedNow;
   const cycleKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   if (lastCountdownCycleKey && lastCountdownCycleKey !== cycleKey) {
     hasHandled0600Today.value = false;
@@ -1698,6 +1715,7 @@ async function onBookingSelectSeat(seat: BookingSeat) {
         }),
       });
       const data = await resp.json();
+      syncServerClock(data?.serverTs);
       if (!resp.ok || !data?.success) {
         showToast(`⚠️ ${data?.error || '选座失败，该席位可能已被他人占用'}`);
         if (data?.carriage) bookingCarriage.value = data.carriage;
@@ -1756,6 +1774,7 @@ async function pickBookingTableInternal(specificTableIndex?: number) {
         }),
       });
       const data = await resp.json();
+      syncServerClock(data?.serverTs);
       if (!resp.ok || !data?.success) {
         showToast(`⚠️ ${data?.error || '分配牌桌失败'}`);
         return;
@@ -3419,6 +3438,7 @@ function onWsMessage(ev: MessageEvent) {
 
     // 预约场专列服务器权威同步消息处理
     if (typeof msg.type === 'string' && msg.type.startsWith('booking_')) {
+      syncServerClock(msg.serverTs);
       const mode = getBookingMode();
       if (msg.type === 'booking_error') {
         stopBookingSyncLock();

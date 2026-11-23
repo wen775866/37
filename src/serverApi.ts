@@ -2,13 +2,16 @@ import {
   loadDatabase,
   saveDatabase,
   recordAdminLog,
+  recordServerPointsTx,
+  generateSecureSessionToken,
   type UserProfileData,
   hashPassword,
   verifyPassword,
 } from './serverStorage.ts';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import crypto from 'crypto';
+import { exec } from 'child_process';
 import { presenceTracker } from './presenceTracker.ts';
 import iconv from 'iconv-lite';
 import { initServerCarriageTables } from './games/shisanshui/bookingTrain.ts';
@@ -1748,6 +1751,57 @@ export async function executeTelegramUpdate(
   };
 }
 
+function sanitizeProfileForClient(profile: any) {
+  if (!profile || typeof profile !== 'object') return profile;
+  const { password: _pwd, sessionToken: _tok, ...safe } = profile;
+  return safe;
+}
+
+function safeTokenEqual(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function extractSessionToken(req: any): string {
+  const auth = String(req?.headers?.authorization || '');
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim();
+  }
+  const hdr = req?.headers?.['x-session-token'];
+  return typeof hdr === 'string' ? hdr.trim() : '';
+}
+
+function authenticateRequest(req: any, db: ReturnType<typeof loadDatabase>): UserProfileData | null {
+  const token = extractSessionToken(req);
+  if (!token) return null;
+  for (const p of Object.values(db.profiles || {})) {
+    if (p && p.sessionToken && !p.isBanned && safeTokenEqual(p.sessionToken, token)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+function authenticateAdmin(req: any, db: ReturnType<typeof loadDatabase>): boolean {
+  const envSecret = String(process.env.ADMIN_API_SECRET || '').trim();
+  const headerSecret = String(req?.headers?.['x-admin-secret'] || '').trim();
+  const authHeader = String(req?.headers?.authorization || '');
+  const bearerSecret = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+  if (envSecret && ((headerSecret && safeTokenEqual(headerSecret, envSecret)) || (bearerSecret && safeTokenEqual(bearerSecret, envSecret)))) {
+    return true;
+  }
+  const authUser = authenticateRequest(req, db);
+  if (authUser && authUser.isAdmin) {
+    return true;
+  }
+  return false;
+}
+
+let isRebuildingApk = false;
+
 export async function handleApiRoute(
   req: any,
   res: any,
@@ -1762,7 +1816,7 @@ export async function handleApiRoute(
   const origin = req.headers?.origin || '*';
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Range, Accept, Origin, x-telegram-bot-api-secret-token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-Token, X-Admin-Secret, X-Requested-With, Range, Accept, Origin, x-telegram-bot-api-secret-token');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Max-Age', '86400');
 
@@ -1860,9 +1914,24 @@ export async function handleApiRoute(
 
   // 1c. APK On-Demand Rebuild (前端静态资源重新构建)
   if ((pathname === '/api/apk/rebuild' || pathname === '/api/download/apk/rebuild') && (method === 'POST' || method === 'GET')) {
+    const db = loadDatabase();
+    if (!authenticateAdmin(req, db)) {
+      sendJson(res, 403, { success: false, error: '需要管理员权限方可执行构建' });
+      return true;
+    }
+    if (isRebuildingApk) {
+      sendJson(res, 409, { success: false, error: '前端资源正在构建中，请稍候...' });
+      return true;
+    }
+    isRebuildingApk = true;
     try {
-      console.log('🔄 [APK API] Rebuilding web assets with npm run build...');
-      execSync('npm run build', { cwd: process.cwd(), stdio: 'inherit' });
+      console.log('🔄 [APK API] Rebuilding web assets asynchronously with npm run build...');
+      await new Promise<void>((resolve, reject) => {
+        exec('npm run build', { cwd: process.cwd(), maxBuffer: 1024 * 1024 * 10 }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
       sendJson(res, 200, {
         success: true,
         message: '最新前端代码已重新构建完成！',
@@ -1872,6 +1941,8 @@ export async function handleApiRoute(
       console.error('❌ [APK API] Build error:', e);
       sendJson(res, 500, { success: false, error: '重新构建失败: ' + String(e.message || e) });
       return true;
+    } finally {
+      isRebuildingApk = false;
     }
   }
 
@@ -2073,13 +2144,21 @@ export async function handleApiRoute(
   // 1f. Booking Carriages API (水镜十三水预约专列车厢赛牌桌数据与提交 - 权威多端同步)
   if (pathname === '/api/booking/carriage' && method === 'GET') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const sceneMode = (urlObj.searchParams.get('sceneMode') === 'eight-booking') ? 'eight-booking' : 'four-booking';
       const carriageId = urlObj.searchParams.get('carriageId') || undefined;
       const carriageNumParam = urlObj.searchParams.get('carriageNumber');
       const requestedCarriageNumber = carriageNumParam ? parseInt(carriageNumParam, 10) : undefined;
-      const userId = urlObj.searchParams.get('playerId') || urlObj.searchParams.get('userId') || 'guest';
-      const playerName = urlObj.searchParams.get('playerName') || '茶客';
-      const avatar = urlObj.searchParams.get('avatar') || '👑';
+      let userId = urlObj.searchParams.get('playerId') || urlObj.searchParams.get('userId') || 'guest';
+      if (authUser) {
+        userId = authUser.id;
+      } else if (userId && db.profiles[userId]?.password) {
+        sendJson(res, 401, { success: false, error: '请先登录后再访问个人预约专列进度' });
+        return true;
+      }
+      const playerName = authUser?.name || urlObj.searchParams.get('playerName') || '茶客';
+      const avatar = authUser?.avatar || urlObj.searchParams.get('avatar') || '👑';
       const state = await getServerBookingState({
         sceneMode,
         userId,
@@ -2098,13 +2177,22 @@ export async function handleApiRoute(
 
   if (pathname === '/api/booking/select-seat' && method === 'POST') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const payload = await parseJsonBody(req);
+      let userId = payload.playerId || payload.userId || 'guest';
+      if (authUser) {
+        userId = authUser.id;
+      } else if (userId && db.profiles[userId]?.password) {
+        sendJson(res, 401, { success: false, error: '会话失效，请重新登录后选座' });
+        return true;
+      }
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
       const resData = await selectServerBookingSeat({
         sceneMode,
-        userId: payload.playerId || payload.userId || 'guest',
-        playerName: payload.playerName || '茶客',
-        avatar: payload.avatar || '👑',
+        userId,
+        playerName: authUser?.name || payload.playerName || '茶客',
+        avatar: authUser?.avatar || payload.avatar || '👑',
         seat: payload.seat || '东',
         carriageId: payload.carriageId || undefined,
         carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
@@ -2119,11 +2207,20 @@ export async function handleApiRoute(
 
   if (pathname === '/api/booking/pick-table' && method === 'POST') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const payload = await parseJsonBody(req);
+      let userId = payload.playerId || payload.userId || 'guest';
+      if (authUser) {
+        userId = authUser.id;
+      } else if (userId && db.profiles[userId]?.password) {
+        sendJson(res, 401, { success: false, error: '会话失效，请重新登录' });
+        return true;
+      }
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
       const resData = await pickServerBookingTable({
         sceneMode,
-        userId: payload.playerId || payload.userId || 'guest',
+        userId,
         carriageId: payload.carriageId || undefined,
         carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
         specificTableIndex: payload.tableIndex ? Number(payload.tableIndex) : undefined,
@@ -2138,13 +2235,22 @@ export async function handleApiRoute(
 
   if (pathname === '/api/booking/submit' && method === 'POST') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const payload = await parseJsonBody(req);
+      let userId = payload.playerId || payload.userId || 'guest';
+      if (authUser) {
+        userId = authUser.id;
+      } else if (userId && db.profiles[userId]?.password) {
+        sendJson(res, 401, { success: false, error: '会话失效，请重新登录后提交手牌' });
+        return true;
+      }
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
       const resData = await submitServerBookingHand({
         sceneMode,
-        userId: payload.playerId || payload.userId || 'guest',
-        playerName: payload.playerName || '茶客',
-        avatar: payload.avatar || '👑',
+        userId,
+        playerName: authUser?.name || payload.playerName || '茶客',
+        avatar: authUser?.avatar || payload.avatar || '👑',
         carriageId: payload.carriageId || undefined,
         carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
         tableIndex: payload.tableIndex ? Number(payload.tableIndex) : undefined,
@@ -2162,13 +2268,22 @@ export async function handleApiRoute(
 
   if (pathname === '/api/booking/advance-carriage' && method === 'POST') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const payload = await parseJsonBody(req);
+      let userId = payload.playerId || payload.userId || 'guest';
+      if (authUser) {
+        userId = authUser.id;
+      } else if (userId && db.profiles[userId]?.password) {
+        sendJson(res, 401, { success: false, error: '会话失效，请重新登录' });
+        return true;
+      }
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
       const resData = await advanceServerBookingCarriage({
         sceneMode,
-        userId: payload.playerId || payload.userId || 'guest',
-        playerName: payload.playerName || '茶客',
-        avatar: payload.avatar || '👑',
+        userId,
+        playerName: authUser?.name || payload.playerName || '茶客',
+        avatar: authUser?.avatar || payload.avatar || '👑',
         createFresh: Boolean(payload.createFresh),
       });
       sendJson(res, 200, { success: true, ...resData });
@@ -2181,11 +2296,20 @@ export async function handleApiRoute(
 
   if (pathname === '/api/booking/simulate-settle' && method === 'POST') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const payload = await parseJsonBody(req);
+      let userId = payload.playerId || payload.userId || 'guest';
+      if (authUser) {
+        userId = authUser.id;
+      } else if (userId && db.profiles[userId]?.password) {
+        sendJson(res, 401, { success: false, error: '会话失效，请重新登录' });
+        return true;
+      }
       const sceneMode = payload.sceneMode === 'eight-booking' ? 'eight-booking' : 'four-booking';
       const resData = await simulateServerBookingSettlement({
         sceneMode,
-        userId: payload.playerId || payload.userId || 'guest',
+        userId,
         carriageId: payload.carriageId || undefined,
         carriageNumber: payload.carriageNumber ? Number(payload.carriageNumber) : undefined,
       });
@@ -2199,8 +2323,10 @@ export async function handleApiRoute(
 
   if (pathname === '/api/booking/ack-settlement' && method === 'POST') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
       const payload = await parseJsonBody(req);
-      const userId = payload.playerId || payload.userId;
+      const userId = authUser?.id || payload.playerId || payload.userId;
       if (userId) {
         await ackServerUnreadSettlements(userId);
       }
@@ -2212,99 +2338,140 @@ export async function handleApiRoute(
     }
   }
 
-  // 2. Database Export
+  // 2. Database Export (管理员鉴权 + 密码与令牌脱敏)
   if (pathname === '/api/database/export' && method === 'GET') {
     const db = loadDatabase();
-    sendJson(res, 200, db);
+    if (!authenticateAdmin(req, db)) {
+      sendJson(res, 403, { success: false, error: '需要管理员权限方可导出数据' });
+      return true;
+    }
+    const sanitizedProfiles: Record<string, any> = {};
+    for (const [k, v] of Object.entries(db.profiles || {})) {
+      sanitizedProfiles[k] = sanitizeProfileForClient(v);
+    }
+    sendJson(res, 200, { ...db, profiles: sanitizedProfiles });
     return true;
   }
 
-  // 3. User Sync
+  // 3. User Sync (需持有有效会话令牌，绝不信任客户端余额或覆盖全局记录)
   if (pathname === '/api/user/sync' && method === 'POST') {
     try {
       const payload = await parseJsonBody(req);
       const db = loadDatabase();
-      if (payload.profile) {
-        const pId = payload.profile.id;
-        const pPhone = payload.profile.phone ? normalizePhone(payload.profile.phone) : '';
-
-        // 严格安全审查：若手机号已被注销或移出授权白名单，坚决拒绝自愈建档与数据入库，防止死灰复燃
-        const { allowedPhones, adminPhones } = getAllowedAndAdminPhones();
-        const isRevoked = pPhone && (db.revokedPhones || []).some((ph: any) => {
-          const np = normalizePhone(ph);
-          return np && (np === pPhone || np.endsWith(pPhone) || pPhone.endsWith(np));
-        });
-        const isAllowed = !pPhone || allowedPhones.length === 0 ||
-          allowedPhones.some((p) => p === pPhone || p.endsWith(pPhone) || pPhone.endsWith(p)) ||
-          adminPhones.some((p) => p === pPhone || p.endsWith(pPhone) || pPhone.endsWith(p));
-
-        if (isRevoked || !isAllowed) {
-          if (pId && db.profiles[pId]) {
-            delete db.profiles[pId];
-            saveDatabase(db);
-          }
-          sendJson(res, 200, {
-            success: false,
-            notFound: true,
-            revoked: true,
-            error: '该账号手机号授权已被管理员移除，已注销',
-          });
-          return true;
-        }
-
-        let existing = pId && pId !== 'default' ? db.profiles[pId] : undefined;
-        if (!existing && pPhone) {
-          existing = Object.values(db.profiles).find((p) => {
-            const ph = normalizePhone(p.phone);
-            return ph && (ph === pPhone || ph.endsWith(pPhone) || pPhone.endsWith(ph));
-          });
-        }
-        if (!existing && pId && pId !== 'default') {
-          // 自愈建档，确保服务重启后本地缓存的合法玩家对局积分能够平滑同步入库，绝不误杀注销玩家
-          db.profiles[pId] = {
-            id: pId,
-            username: payload.profile.username || pPhone || pId,
-            name: payload.profile.name || '茶客',
-            avatar: payload.profile.avatar || '👑',
-            phone: pPhone,
-            coins: typeof payload.profile.coins === 'number' ? Math.max(0, Math.floor(Number(payload.profile.coins))) : 2000,
-            rating: typeof payload.profile.rating === 'number' ? payload.profile.rating : 1800,
-            level: typeof payload.profile.level === 'number' ? payload.profile.level : 1,
-            registeredAt: Date.now(),
-            updatedAt: Date.now(),
-          } as any;
-          existing = db.profiles[pId];
-        }
-
-        if (existing) {
-          // 服务端资产权威中心：仅当服务端无筹码记录时初始化，绝不允许客户端覆盖服务端权威筹码余额，防止断线冲抵丢失！
-          if (typeof existing.coins !== 'number' || isNaN(existing.coins)) {
-            if (typeof payload.profile.coins === 'number' && !isNaN(payload.profile.coins)) {
-              existing.coins = Math.max(0, Math.floor(Number(payload.profile.coins)));
-            } else {
-              existing.coins = 2000;
-            }
-          }
-          if (payload.profile.name) existing.name = payload.profile.name;
-          if (payload.profile.avatar) existing.avatar = payload.profile.avatar;
-          if (payload.profile.rating) existing.rating = payload.profile.rating;
-          if (payload.profile.level) existing.level = payload.profile.level;
-          if (payload.profile.stats) existing.stats = payload.profile.stats;
-          existing.updatedAt = Date.now();
-        }
+      const authUser = authenticateRequest(req, db);
+      if (!authUser) {
+        sendJson(res, 401, { success: false, error: '会话无效或未登录，请重新登录' });
+        return true;
       }
+
+      if (payload.profile?.id && payload.profile.id !== authUser.id) {
+        sendJson(res, 403, { success: false, error: '无权同步他人账号数据' });
+        return true;
+      }
+
+      const pPhone = normalizePhone(authUser.phone || '');
+      const { allowedPhones, adminPhones } = getAllowedAndAdminPhones();
+      const isRevoked = pPhone && (db.revokedPhones || []).some((ph: any) => {
+        const np = normalizePhone(ph);
+        return np && (np === pPhone || np.endsWith(pPhone) || pPhone.endsWith(np));
+      });
+      const isAllowed = !pPhone || allowedPhones.length === 0 ||
+        allowedPhones.some((p) => p === pPhone || p.endsWith(pPhone) || pPhone.endsWith(p)) ||
+        adminPhones.some((p) => p === pPhone || p.endsWith(pPhone) || pPhone.endsWith(p));
+
+      if (isRevoked || !isAllowed) {
+        delete db.profiles[authUser.id];
+        saveDatabase(db);
+        sendJson(res, 200, {
+          success: false,
+          notFound: true,
+          revoked: true,
+          error: '该账号手机号授权已被管理员移除，已注销',
+        });
+        return true;
+      }
+
+      if (payload.profile?.name && String(payload.profile.name).trim().length <= 3) {
+        authUser.name = String(payload.profile.name).trim();
+      }
+      if (payload.profile?.avatar) authUser.avatar = String(payload.profile.avatar).slice(0, 12);
+      if (typeof payload.profile?.rating === 'number' && Number.isFinite(payload.profile.rating)) {
+        authUser.rating = Math.max(1000, Math.min(9999, Math.round(payload.profile.rating)));
+      }
+      if (typeof payload.profile?.level === 'number' && Number.isFinite(payload.profile.level)) {
+        authUser.level = Math.max(1, Math.min(20, Math.round(payload.profile.level)));
+      }
+      if (payload.profile?.stats && typeof payload.profile.stats === 'object') {
+        authUser.stats = payload.profile.stats;
+      }
+      authUser.updatedAt = Date.now();
+
       if (payload.records && Array.isArray(payload.records)) {
-        db.records = payload.records.slice(0, 100);
+        const existingIds = new Set((db.records || []).map((r) => r.id));
+        const newEntries = payload.records
+          .filter((r: any) => r && r.id && !existingIds.has(r.id))
+          .slice(0, 20)
+          .map((r: any) => ({ ...r, playerId: authUser.id }));
+        if (newEntries.length > 0) {
+          db.records = [...newEntries, ...(db.records || [])].slice(0, 500);
+        }
       }
       saveDatabase(db);
-      const targetUser = payload.profile?.id ? db.profiles[payload.profile.id] : undefined;
       sendJson(res, 200, {
         success: true,
-        coins: targetUser?.coins ?? payload.profile?.coins,
-        rating: targetUser?.rating ?? payload.profile?.rating,
-        level: targetUser?.level ?? payload.profile?.level,
-        profile: targetUser ?? payload.profile,
+        coins: authUser.coins,
+        rating: authUser.rating,
+        level: authUser.level,
+        profile: sanitizeProfileForClient(authUser),
       });
+    } catch (e) {
+      sendJson(res, 500, { success: false, error: String(e) });
+    }
+    return true;
+  }
+
+  // 3b. User Profile Update (昵称与头像修改直落服务器)
+  if (pathname === '/api/user/profile' && method === 'POST') {
+    try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
+      if (!authUser) {
+        sendJson(res, 401, { success: false, error: '请先登录后再修改资料' });
+        return true;
+      }
+      const { name, avatar } = await parseJsonBody(req);
+      const cleanName = typeof name === 'string' ? name.trim() : '';
+      if (cleanName.length > 3) {
+        sendJson(res, 400, { success: false, error: '昵称长度不能超过3个字' });
+        return true;
+      }
+      if (cleanName) authUser.name = cleanName;
+      if (typeof avatar === 'string' && avatar.trim()) authUser.avatar = avatar.trim().slice(0, 12);
+      authUser.updatedAt = Date.now();
+      saveDatabase(db);
+      if (broadcast) {
+        try {
+          broadcastTeahousePlayersRoster(broadcast, db);
+        } catch {}
+      }
+      sendJson(res, 200, { success: true, profile: sanitizeProfileForClient(authUser) });
+    } catch (e) {
+      sendJson(res, 500, { success: false, error: String(e) });
+    }
+    return true;
+  }
+
+  // 3c. Server Points Ledger (云端积分流水账单)
+  if (pathname === '/api/points/ledger' && method === 'GET') {
+    try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
+      if (!authUser) {
+        sendJson(res, 401, { success: false, error: '请先登录查看账单流水' });
+        return true;
+      }
+      const transactions = db.pointsLedger?.[authUser.id] || [];
+      sendJson(res, 200, { success: true, transactions });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
     }
@@ -2370,14 +2537,14 @@ export async function handleApiRoute(
         existingProfile.avatar = avatar || existingProfile.avatar || '👑';
         existingProfile.isAdmin = isAdmin;
         existingProfile.updatedAt = Date.now();
-        const sessionToken = 'sess_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+        const sessionToken = generateSecureSessionToken();
         existingProfile.sessionToken = sessionToken;
 
         saveDatabase(db);
         triggerDebouncedTxtBackup(`激活白名单新茶客 (${existingProfile.name})`, db);
         recordAdminLog('USER_REGISTER', 'Telegram Auth', cleanPhone, `白名单预建用户激活注册成功: ${existingProfile.name} (📱 ${cleanPhone}, UID: ${existingProfile.id})，当前预设筹码: ${existingProfile.coins || 0}`, 0);
 
-        sendJson(res, 200, { success: true, profile: existingProfile, sessionToken });
+        sendJson(res, 200, { success: true, profile: sanitizeProfileForClient(existingProfile), sessionToken });
         return true;
       }
 
@@ -2405,7 +2572,7 @@ export async function handleApiRoute(
         },
       };
 
-      const sessionToken = 'sess_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+      const sessionToken = generateSecureSessionToken();
       newProfile.sessionToken = sessionToken;
 
       db.profiles[newId] = newProfile;
@@ -2421,7 +2588,7 @@ export async function handleApiRoute(
         } catch {}
       }
 
-      sendJson(res, 200, { success: true, profile: newProfile, sessionToken });
+      sendJson(res, 200, { success: true, profile: sanitizeProfileForClient(newProfile), sessionToken });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
     }
@@ -2504,11 +2671,11 @@ export async function handleApiRoute(
       if (!foundProfile.password.includes(':')) {
         foundProfile.password = hashPassword(String(password).trim());
       }
-      const sessionToken = 'sess_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+      const sessionToken = generateSecureSessionToken();
       foundProfile.sessionToken = sessionToken;
       saveDatabase(db);
 
-      sendJson(res, 200, { success: true, profile: foundProfile, sessionToken });
+      sendJson(res, 200, { success: true, profile: sanitizeProfileForClient(foundProfile), sessionToken });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
     }
@@ -2544,7 +2711,7 @@ export async function handleApiRoute(
         return true;
       }
 
-      if (user.sessionToken && user.sessionToken !== sessionToken) {
+      if (user.sessionToken && !safeTokenEqual(user.sessionToken, String(sessionToken || ''))) {
         sendJson(res, 200, { success: true, valid: false, sessionExpired: true, error: '您的账号已在另一台设备登录，当前会话已失效' });
         return true;
       }
@@ -2555,7 +2722,7 @@ export async function handleApiRoute(
         rating: user.rating,
         level: user.level,
         name: user.name,
-        profile: user,
+        profile: sanitizeProfileForClient(user),
       });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
@@ -2563,16 +2730,21 @@ export async function handleApiRoute(
     return true;
   }
 
-  // 6. User Search
+  // 6. User Search (需登录后检索茶客)
   if (pathname === '/api/users/search' && method === 'GET') {
     try {
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
+      if (!authUser) {
+        sendJson(res, 401, { success: false, error: '请先登录后再查找茶客' });
+        return true;
+      }
       const rawPhone = String(urlObj.searchParams.get('phone') || '').trim();
       const phone = normalizePhone(rawPhone) || rawPhone.replace(/\D/g, '');
       if (!phone) {
         sendJson(res, 400, { success: false, error: '请输入要搜索的手机号' });
         return true;
       }
-      const db = loadDatabase();
       let found = findUser(phone, db);
       if (!found && phone.length >= 7) {
         const { allowedPhones, adminPhones } = getAllowedAndAdminPhones();
@@ -2608,29 +2780,26 @@ export async function handleApiRoute(
     return true;
   }
 
-  // 7. Points Transfer
+  // 7. Points Transfer (严格会话鉴权，绝不接受客户端余额，双边写入云端流水)
   if (pathname === '/api/points/transfer' && method === 'POST') {
     try {
-      const { senderId, senderPhone, recipientId, recipientPhone, amount, clientCoins } = await parseJsonBody(req);
+      const db = loadDatabase();
+      const authUser = authenticateRequest(req, db);
+      if (!authUser) {
+        sendJson(res, 401, { success: false, error: '请先登录后再赠送筹码' });
+        return true;
+      }
+      const { senderId, recipientId, recipientPhone, amount } = await parseJsonBody(req);
+      if (senderId && senderId !== authUser.id) {
+        sendJson(res, 403, { success: false, error: '身份校验失败，禁止操作他人账户' });
+        return true;
+      }
       const transferAmount = Math.floor(Number(amount) || 0);
       if (transferAmount <= 0) {
         sendJson(res, 400, { success: false, error: '赠送筹码数量必须大于0' });
         return true;
       }
-      const db = loadDatabase();
-      let sender = (senderId && db.profiles[senderId]) || (senderPhone && findUser(senderPhone, db));
-      if (!sender && senderId) {
-        sender = findUser(senderId, db);
-      }
-      if (!sender) {
-        sendJson(res, 400, { success: false, error: '发送方账户不存在或尚未登录' });
-        return true;
-      }
-
-      // Synchronize client local coins if client has higher verified balance
-      if (typeof clientCoins === 'number' && clientCoins > sender.coins) {
-        sender.coins = Math.max(sender.coins, Math.floor(clientCoins));
-      }
+      const sender = authUser;
 
       if (sender.coins < transferAmount) {
         sendJson(res, 200, { success: false, error: `持有筹码不足，当前仅有 ${sender.coins} 分，无法赠送` });
@@ -2652,7 +2821,7 @@ export async function handleApiRoute(
 
       const cleanSenderPhone = normalizePhone(sender.phone || '');
       const cleanRecipientPhone = normalizePhone(recipient.phone || '');
-      if (cleanSenderPhone && cleanRecipientPhone && cleanSenderPhone === cleanRecipientPhone) {
+      if (recipient.id === sender.id || (cleanSenderPhone && cleanRecipientPhone && cleanSenderPhone === cleanRecipientPhone)) {
         sendJson(res, 200, { success: false, error: '不能向自己的手机号赠送筹码' });
         return true;
       }
@@ -2661,6 +2830,23 @@ export async function handleApiRoute(
       recipient.coins += transferAmount;
       sender.updatedAt = Date.now();
       recipient.updatedAt = Date.now();
+
+      recordServerPointsTx(
+        db,
+        sender.id,
+        'transfer_out',
+        `向 ${recipient.name} (${recipient.phone || recipient.id}) 赠送筹码`,
+        -transferAmount,
+        sender.coins
+      );
+      recordServerPointsTx(
+        db,
+        recipient.id,
+        'transfer_in',
+        `收到 ${sender.name} (${sender.phone || sender.id}) 赠送筹码`,
+        transferAmount,
+        recipient.coins
+      );
 
       saveDatabase(db);
       triggerDebouncedTxtBackup(`互赠筹码 (${sender.name} -> ${recipient.name})`, db);
@@ -2673,7 +2859,6 @@ export async function handleApiRoute(
         transferAmount
       );
 
-      // Real-time WebSocket broadcasting to notify both users and teahouse
       if (typeof broadcast === 'function') {
         try {
           broadcast({
@@ -2719,8 +2904,8 @@ export async function handleApiRoute(
         transferAmount,
         senderCoins: sender.coins,
         recipientCoins: recipient.coins,
-        senderProfile: sender,
-        recipientProfile: recipient,
+        senderProfile: sanitizeProfileForClient(sender),
+        recipientProfile: sanitizeProfileForClient(recipient),
       });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
@@ -2808,6 +2993,13 @@ export async function handleApiRoute(
   // ==========================================
   // TELEGRAM ADMIN APIS (管理员专属控制接口)
   // ==========================================
+  if (pathname.startsWith('/api/admin/')) {
+    const db = loadDatabase();
+    if (!authenticateAdmin(req, db)) {
+      sendJson(res, 403, { success: false, error: '管理员权限校验失败' });
+      return true;
+    }
+  }
 
   // 8. Admin: List All Users
   if (pathname === '/api/admin/users' && method === 'GET') {
@@ -2857,6 +3049,17 @@ export async function handleApiRoute(
         user.coins = Math.max(0, user.coins + Math.abs(num));
       }
       user.updatedAt = Date.now();
+      const netDelta = user.coins - oldCoins;
+      if (netDelta !== 0) {
+        recordServerPointsTx(
+          db,
+          user.id,
+          netDelta >= 0 ? 'admin_grant' : 'admin_deduct',
+          `${reason || '管理员调整筹码'} (${netDelta >= 0 ? '+' : ''}${netDelta})`,
+          netDelta,
+          user.coins
+        );
+      }
 
       saveDatabase(db);
       triggerDebouncedTxtBackup(`Web后台调整筹码 (${user.name})`, db);
@@ -2864,8 +3067,8 @@ export async function handleApiRoute(
         `POINTS_${type.toUpperCase()}`,
         operator,
         user.name,
-        `${reason}: ${oldCoins} -> ${user.coins} (变动: ${user.coins - oldCoins >= 0 ? '+' : ''}${user.coins - oldCoins})`,
-        user.coins - oldCoins
+        `${reason}: ${oldCoins} -> ${user.coins} (变动: ${netDelta >= 0 ? '+' : ''}${netDelta})`,
+        netDelta
       );
 
       if (typeof broadcast === 'function') {
@@ -2878,7 +3081,7 @@ export async function handleApiRoute(
           coins: user.coins,
           rating: user.rating,
           level: user.level,
-          delta: user.coins - oldCoins,
+          delta: netDelta,
           operator,
           timestamp: Date.now(),
         });
@@ -2886,10 +3089,10 @@ export async function handleApiRoute(
 
       sendJson(res, 200, {
         success: true,
-        user,
+        user: sanitizeProfileForClient(user),
         oldCoins,
         newCoins: user.coins,
-        delta: user.coins - oldCoins,
+        delta: netDelta,
       });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
@@ -2929,8 +3132,20 @@ export async function handleApiRoute(
       const db = loadDatabase();
       let affectedCount = 0;
       for (const user of Object.values(db.profiles)) {
+        const oldCoins = user.coins;
         user.coins = Math.max(0, user.coins + num);
         user.updatedAt = Date.now();
+        const delta = user.coins - oldCoins;
+        if (delta !== 0) {
+          recordServerPointsTx(
+            db,
+            user.id,
+            delta >= 0 ? 'admin_grant' : 'admin_deduct',
+            `${reason} (${delta >= 0 ? '+' : ''}${delta})`,
+            delta,
+            user.coins
+          );
+        }
         affectedCount++;
       }
       saveDatabase(db);

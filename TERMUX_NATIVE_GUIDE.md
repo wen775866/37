@@ -130,6 +130,13 @@ tmux capture-pane -pt chess-native:tunnel -S -80 | grep -i "location="
   cd ~/chess-lobby && ./deploy_termux_native.sh --restart-all
   ```
 
+### 3. 激活 Telegram Bot Webhook（解决国内网络下机器人无反应）
+由于国内手机无法直连 `api.telegram.org`，后端开机自动注册 Webhook 时可能会超时，**必须手动一次性激活**：
+1. 确保 `~/.env` 已填好 `URL="https://你的域名.com"` 和 `TELEGRAM_BOT_TOKEN` 并已启动服务；
+2. 用**能正常打开 Telegram 的浏览器**访问：`https://你的域名.com/api/telegram/set-webhook`；
+3. 点击页面蓝色按钮 **「👉 在当前浏览器中直连官方激活 Webhook」**，浏览器弹出 `{"ok":true,"result":true,"description":"Webhook was set"}` 即激活成功！
+4. 激活后 Telegram 服务器会通过你的 Cloudflare 域名主动把指令推送给 Termux，**手机无需挂代理即可秒级回复管理员菜单**（若仍无反应，可访问 `https://你的域名.com/api/telegram/webhook-info` 查看错误诊断）。
+
 ---
 
 ## 六、 日常运维与代码增量更新

@@ -89,9 +89,9 @@ const adminPendingStates = new Map<string, AdminPendingState>();
 
 function findEnvFilePath(): string | null {
   const candidates = [
-    path.resolve(process.cwd(), '.env'),
-    path.resolve(process.cwd(), '..', '.env'),
     process.env.HOME ? path.resolve(process.env.HOME, '.env') : '',
+    path.resolve(process.cwd(), '..', '.env'),
+    path.resolve(process.cwd(), '.env'),
   ].filter(Boolean);
 
   for (const p of candidates) {
@@ -116,7 +116,7 @@ export function getGithubRepoName(): string {
 
 export function saveEnvVariable(key: string, value: string): void {
   process.env[key] = value;
-  const envPath = findEnvFilePath() || path.resolve(process.cwd(), '.env');
+  const envPath = findEnvFilePath() || (process.env.HOME ? path.resolve(process.env.HOME, '.env') : path.resolve(process.cwd(), '.env'));
   try {
     let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
     const regex = new RegExp(`^${key}\\s*=.*$`, 'm');
@@ -133,20 +133,29 @@ export function saveEnvVariable(key: string, value: string): void {
 }
 
 function getAdminUsernamesFromEnv(): string[] {
+  const candidates = [
+    process.env.HOME ? path.resolve(process.env.HOME, '.env') : '',
+    path.resolve(process.cwd(), '..', '.env'),
+    path.resolve(process.cwd(), '.env'),
+  ].filter(Boolean);
+
   try {
-    const envPath = findEnvFilePath();
-    if (envPath && fs.existsSync(envPath)) {
+    for (const envPath of candidates) {
+      if (!fs.existsSync(envPath)) continue;
       const content = fs.readFileSync(envPath, 'utf-8');
       const lines = content.split('\n');
       const usernames: string[] = [];
       for (const line of lines) {
-        const match = line.match(/^([A-Z_]+)\s*=\s*(['"]?)([^'"]+)\2/i);
+        const match = line.match(/^([A-Z_]+)\s*=\s*(['"]?)([^'"]*)\2/i);
         if (match) {
           const key = match[1].toUpperCase();
           const val = match[3];
           if (key.includes('ADMIN') && (key.includes('USER') || key.includes('NAME'))) {
             const vals = val.split(/[\s,;]+/);
-            for (const v of vals) if (v.trim()) usernames.push(v.trim().replace(/^@/, ''));
+            for (const v of vals) {
+              const cleaned = v.trim().replace(/^@/, '');
+              if (cleaned && cleaned !== 'admin_username') usernames.push(cleaned);
+            }
           }
         }
       }

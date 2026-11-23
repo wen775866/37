@@ -160,24 +160,31 @@ fi
 
 # 6. 检查 .env 与 data 目录
 echo -e "\n${CYAN}[6/6] 检查环境变量 (.env)、数据目录并重启服务...${NC}"
-if [ ! -f ".env" ]; then
+if [ -f "$HOME/.env" ]; then
+  echo -e "${GREEN}  -> 检测到用户根目录配置: ~/.env${NC}"
+elif [ -f ".env" ]; then
+  echo -e "${GREEN}  -> 检测到项目目录已有 .env 配置文件${NC}"
+else
   if [ -f ".env.example" ]; then
     cp .env.example .env
   else
     cat << 'EOF' > .env
+URL=""
+APP_URL=""
+CLOUDFLARED_TUNNEL_TOKEN=""
+TELEGRAM_BOT_TOKEN=""
+ADMIN_USERNAMES="admin_username"
+TELEGRAM_API_BASE=""
+BOT_MODE="webhook"
+WEBHOOK_URL=""
+TELEGRAM_WEBHOOK_SECRET=""
+ADMIN_API_SECRET=""
 PORT=3000
-HOST=0.0.0.0
-NODE_ENV=production
-BOT_MODE=auto
-URL=
-APP_URL=
-TELEGRAM_BOT_TOKEN=
-ADMIN_API_SECRET=
+HOST="0.0.0.0"
+NODE_ENV="production"
 EOF
   fi
   echo -e "${AMBER}  -> 已生成 .env，请编辑填入 TELEGRAM_BOT_TOKEN、URL 及 ADMIN_API_SECRET${NC}"
-else
-  echo -e "${GREEN}  -> 检测到已有 .env 配置文件${NC}"
 fi
 
 mkdir -p data

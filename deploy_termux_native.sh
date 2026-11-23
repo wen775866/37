@@ -199,26 +199,41 @@ else
   echo -e "${GREEN}  -> 前端静态包 dist/index.html 已是最新，跳过下载${NC}"
 fi
 
-# 5. 初始化 .env 与 data 目录
-echo -e "\n${CYAN}[5/6] 检查环境变量 (.env) 与数据目录...${NC}"
-if [ ! -f ".env" ]; then
+# 5. 初始化 Termux 根目录 ~/.env 与 data 目录
+echo -e "\n${CYAN}[5/6] 检查环境变量 (优先 Termux 根目录 ~/.env) 与数据目录...${NC}"
+TERMUX_ENV="$HOME/.env"
+LOCAL_ENV="$SCRIPT_DIR/.env"
+
+if [ -f "$TERMUX_ENV" ]; then
+  echo -e "${GREEN}  -> 已检测到 Termux 根目录配置: ~/.env${NC}"
+elif [ -f "$LOCAL_ENV" ]; then
+  echo -e "${GREEN}  -> 已检测到项目目录配置: $LOCAL_ENV${NC}"
+  echo -e "${AMBER}  -> 提示: 建议执行 mv \"$LOCAL_ENV\" \"$TERMUX_ENV\" 移至 Termux 根目录，删库重拉也不会丢失配置${NC}"
+else
   if [ -f ".env.example" ]; then
-    cp .env.example .env
+    cp .env.example "$TERMUX_ENV"
   else
-    cat << 'EOF' > .env
+    cat << 'EOF' > "$TERMUX_ENV"
+URL=""
+APP_URL=""
+CLOUDFLARED_TUNNEL_TOKEN=""
+CLOUDFLARED_PROTOCOL="http2"
+CLOUDFLARED_EDGE_IP="4"
+CLOUDFLARED_HA_CONNECTIONS="2"
+TELEGRAM_BOT_TOKEN=""
+ADMIN_USERNAMES="admin_username"
+TELEGRAM_API_BASE=""
+BOT_MODE="webhook"
+WEBHOOK_URL=""
+TELEGRAM_WEBHOOK_SECRET=""
+ADMIN_API_SECRET=""
 PORT=3000
-HOST=0.0.0.0
-NODE_ENV=production
-BOT_MODE=auto
-URL=
-APP_URL=
-TELEGRAM_BOT_TOKEN=
-ADMIN_API_SECRET=
+HOST="0.0.0.0"
+NODE_ENV="production"
 EOF
   fi
-  echo -e "${AMBER}  -> 已生成初始 .env，后续可使用 nano .env 填写机器人 Token 与密钥${NC}"
-else
-  echo -e "${GREEN}  -> 检测到已有 .env 配置${NC}"
+  echo -e "${AMBER}  -> 已在 Termux 根目录生成配置文件: ~/.env${NC}"
+  echo -e "${AMBER}  -> 请执行 nano ~/.env 填写 CLOUDFLARED_TUNNEL_TOKEN、URL 与机器人密钥${NC}"
 fi
 
 mkdir -p data
@@ -250,28 +265,40 @@ cat << 'EOF' > "$SCRIPT_DIR/.run_termux_tunnel.sh"
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock 2>/dev/null || true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/.env" ]; then
-  set -a
-  . "$SCRIPT_DIR/.env"
-  set +a
-fi
-if [ -f "$HOME/.cloudflared/config.yml" ]; then
+
+# 按与 server.ts 一致的优先级加载环境变量 (Termux 根目录 ~/.env 优先)
+for env_file in "$SCRIPT_DIR/.env" "$SCRIPT_DIR/../.env" "$HOME/.env"; do
+  if [ -f "$env_file" ]; then
+    set -a
+    . "$env_file"
+    set +a
+  fi
+done
+
+TOKEN="${CLOUDFLARED_TUNNEL_TOKEN:-$TUNNEL_TOKEN}"
+CF_PROTO="${CLOUDFLARED_PROTOCOL:-http2}"
+CF_EDGE_IP="${CLOUDFLARED_EDGE_IP:-4}"
+CF_HA="${CLOUDFLARED_HA_CONNECTIONS:-2}"
+
+if [ -n "$TOKEN" ]; then
   while true; do
-    echo "[$(date '+%F %T')] 🌐 启动固定配置文件 Cloudflare Tunnel (HTTP/2 + IPv4)..."
-    cloudflared tunnel --edge-ip-version 4 --protocol http2 --ha-connections 2 run
+    echo "[$(date '+%F %T')] 🌐 读取 ~/.env Token 启动 Cloudflare Tunnel (协议: ${CF_PROTO}, IPv${CF_EDGE_IP}, 连接数: ${CF_HA})..."
+    cloudflared tunnel --edge-ip-version "$CF_EDGE_IP" --protocol "$CF_PROTO" --ha-connections "$CF_HA" run --token "$TOKEN"
     echo "[$(date '+%F %T')] ⚠️ 隧道断开，3 秒后自动重连..."
     sleep 3
   done
-elif [ -n "$CLOUDFLARED_TUNNEL_TOKEN" ]; then
+elif [ -f "$HOME/.cloudflared/config.yml" ]; then
   while true; do
-    echo "[$(date '+%F %T')] 🌐 启动 Token 模式 Cloudflare Tunnel (HTTP/2 + IPv4)..."
-    cloudflared tunnel --edge-ip-version 4 --protocol http2 --ha-connections 2 run --token "$CLOUDFLARED_TUNNEL_TOKEN"
+    echo "[$(date '+%F %T')] 🌐 启动配置文件模式 Cloudflare Tunnel (协议: ${CF_PROTO}, IPv${CF_EDGE_IP}, 连接数: ${CF_HA})..."
+    cloudflared tunnel --edge-ip-version "$CF_EDGE_IP" --protocol "$CF_PROTO" --ha-connections "$CF_HA" run
     echo "[$(date '+%F %T')] ⚠️ 隧道断开，3 秒后自动重连..."
     sleep 3
   done
 else
-  echo "[提示] 尚未配置固定隧道 (~/.cloudflared/config.yml 或 CLOUDFLARED_TUNNEL_TOKEN)。"
-  echo "如需临时公网域名，请直接在此窗口执行："
+  echo "[提示] 未在 ~/.env 中检测到 CLOUDFLARED_TUNNEL_TOKEN，且不存在 ~/.cloudflared/config.yml。"
+  echo "请编辑 ~/.env 填入 CLOUDFLARED_TUNNEL_TOKEN=\"你的Token\" 后执行："
+  echo "  ./deploy_termux_native.sh --restart-all"
+  echo "或直接在此窗口运行临时测试域名："
   echo "  cloudflared tunnel --edge-ip-version 4 --protocol http2 --url http://127.0.0.1:3000"
   exec bash
 fi

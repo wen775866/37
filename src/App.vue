@@ -827,11 +827,11 @@
     />
 
     <!-- Modals -->
-    <!-- 1. 注册登录弹窗 -->
+    <!-- 1. 注册登录弹窗 (始终竖屏显示，适配手机竖屏输入法键盘) -->
     <AuthModal
       v-if="showAuthModal"
       :profile="userProfile"
-      :is-rotated-90="isRotated90"
+      :is-rotated-90="false"
       @close="showAuthModal = false"
       @update:profile="onUpdateProfile"
       @open-termux="showTermuxModal = true"

@@ -1,14 +1,11 @@
 <template>
   <Teleport to="body">
     <div
-      :class="isRotated90
-        ? 'auth-modal-rotated-full flex items-center justify-center p-2 select-none overflow-hidden'
-        : 'fixed inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-start sm:items-center justify-center p-2 sm:p-4 select-none overflow-hidden'"
+      class="fixed inset-0 z-[130] bg-black/65 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 select-none overflow-hidden"
     >
-      <!-- Modal Box: Auto-adapts to mobile height with permanently visible action footer -->
+      <!-- Modal Box: Always portrait/upright so mobile soft keyboard aligns naturally -->
       <div
-        :class="isRotated90 ? 'w-full max-w-[460px] max-h-[92dvw]' : 'w-full max-w-[450px] max-h-[96vh] sm:max-h-[88vh]'"
-        class="flex flex-col rounded-2xl sm:rounded-3xl bg-[#EFE5D3] border border-[#D8C7B0] shadow-2xl overflow-hidden relative text-[#3C2C1E]"
+        class="w-full max-w-[390px] sm:max-w-[430px] max-h-[calc(100dvh-24px)] sm:max-h-[88dvh] flex flex-col rounded-2xl sm:rounded-3xl bg-[#EFE5D3] border border-[#D8C7B0] shadow-2xl overflow-hidden relative text-[#3C2C1E]"
       >
         <!-- 1. Top Header Bar (Fixed / Shrink-0) -->
         <div class="flex items-center justify-between px-3.5 py-2.5 sm:px-5 sm:py-3 border-b border-[#D8C7B0] shrink-0 gap-2 bg-[#FAF4E8]">
@@ -59,7 +56,7 @@
         </div>
 
         <!-- 3. Scrollable Input Body (Middle Area) -->
-        <div class="flex-1 overflow-y-auto px-3.5 py-2 pb-8 scroll-pb-24 sm:px-5 min-h-0 space-y-2.5 overscroll-contain">
+        <div class="flex-1 overflow-y-auto px-3.5 py-2.5 pb-4 scroll-pb-12 sm:px-5 min-h-0 space-y-2.5 overscroll-contain">
           <!-- A. Logged In Profile Card Mode -->
           <div v-if="isLoggedIn" class="py-1 space-y-3">
             <div class="p-3 rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] flex items-center justify-between shadow-xs">
@@ -92,8 +89,9 @@
                 v-model="editName"
                 type="text"
                 maxlength="3"
-                class="w-full px-3 py-1.5 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner"
+                class="w-full px-3 py-2 text-sm rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner"
                 placeholder="请输入新的名号 (最多3个字)..."
+                @focus="onInputFocus"
               />
             </div>
 
@@ -127,8 +125,9 @@
                   inputmode="tel"
                   autocomplete="tel"
                   required
-                  class="w-full px-3 py-2 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] font-mono shadow-inner"
+                  class="w-full px-3 py-2.5 text-sm rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] font-mono shadow-inner"
                   placeholder="请输入您的登录手机号 (如 13012345678)"
+                  @focus="onInputFocus"
                   @keydown.enter="submitLogin"
                 />
               </div>
@@ -140,16 +139,17 @@
                   type="password"
                   required
                   autocomplete="current-password"
-                  class="w-full px-3 py-2 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner font-mono"
+                  class="w-full px-3 py-2.5 text-sm rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner font-mono"
                   placeholder="请输入登录密码..."
+                  @focus="onInputFocus"
                   @keydown.enter="submitLogin"
                 />
               </div>
             </div>
 
             <!-- 2) Register Form (Compact 2-Column Grid: 移除账号名，以手机号为唯一凭证) -->
-            <div v-else-if="authTab === 'register'" class="space-y-2">
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div v-else-if="authTab === 'register'" class="space-y-2.5">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <!-- Phone (Whitelist) -->
                 <div>
                   <div class="flex items-center justify-between mb-1">
@@ -162,8 +162,9 @@
                     inputmode="tel"
                     autocomplete="tel"
                     required
-                    class="w-full px-3 py-1.5 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] font-mono shadow-inner"
+                    class="w-full px-3 py-2 text-sm rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] font-mono shadow-inner"
                     placeholder="输入已获Bot授权的手机号"
+                    @focus="onInputFocus"
                     @keydown.enter="submitRegister"
                   />
                 </div>
@@ -177,8 +178,9 @@
                     inputmode="numeric"
                     maxlength="6"
                     required
-                    class="w-full px-3 py-1.5 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner font-mono"
+                    class="w-full px-3 py-2 text-sm rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner font-mono"
                     placeholder="设置6位数字密码"
+                    @focus="onInputFocus"
                     @keydown.enter="submitRegister"
                   />
                 </div>
@@ -190,8 +192,9 @@
                     v-model="formNickname"
                     type="text"
                     maxlength="3"
-                    class="w-full px-3 py-1.5 text-xs rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner"
+                    class="w-full px-3 py-2 text-sm rounded-xl bg-[#FFFDF8] border border-[#D8C7B0] text-[#3C2C1E] focus:outline-none focus:border-[#5C4533] shadow-inner"
                     placeholder="如：茶客（选填，最多3个字）"
+                    @focus="onInputFocus"
                     @keydown.enter="submitRegister"
                   />
                 </div>
@@ -500,6 +503,14 @@ function handleLogout() {
   authTab.value = 'login';
 }
 
+function onInputFocus(e: FocusEvent) {
+  const el = e.target as HTMLElement | null;
+  if (!el) return;
+  setTimeout(() => {
+    el.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, 180);
+}
+
 onMounted(() => {
   if (props.profile.phone && !formPhone.value) {
     formPhone.value = props.profile.phone;
@@ -514,17 +525,5 @@ onMounted(() => {
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
-}
-.auth-modal-rotated-full {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100dvh;
-  height: 100dvw;
-  transform-origin: 0 0;
-  transform: rotate(90deg) translateY(-100%);
-  z-index: 120;
-  background-color: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px);
 }
 </style>

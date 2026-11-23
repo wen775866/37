@@ -32,7 +32,7 @@ function chessWebSocketPlugin(): Plugin {
     configureServer(server) {
       if (!server.httpServer) return;
 
-      const wss = new WebSocketServer({ server: server.httpServer, path: '/ws' });
+      const wss = new WebSocketServer({ server: server.httpServer, path: '/ws', perMessageDeflate: false });
 
       wss.on('error', (err) => {
         console.warn('[Vite WS Server Warning]', err);

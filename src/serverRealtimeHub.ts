@@ -1002,7 +1002,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
     return true;
   }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    try {
+      (ws as any)?._socket?.setNoDelay?.(true);
+      (req?.socket as any)?.setNoDelay?.(true);
+    } catch {}
     const socketId = Math.random().toString(36).slice(2, 10);
     (ws as any).socketId = socketId;
     (ws as any).isAlive = true;

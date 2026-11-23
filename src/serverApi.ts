@@ -1923,6 +1923,13 @@ export async function handleApiRoute(
       sendJson(res, 409, { success: false, error: '前端资源正在构建中，请稍候...' });
       return true;
     }
+    if (!fs.existsSync(path.resolve(process.cwd(), 'node_modules', 'vite'))) {
+      sendJson(res, 400, {
+        success: false,
+        error: '当前为纯生产运行时模式（--omit=dev），未安装前端编译工具链，请在 PC/CI 构建 dist 后同步更新',
+      });
+      return true;
+    }
     isRebuildingApk = true;
     try {
       console.log('🔄 [APK API] Rebuilding web assets asynchronously with npm run build...');

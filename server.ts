@@ -94,7 +94,14 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+server.on('connection', (socket) => {
+  socket.setNoDelay(true);
+  socket.setKeepAlive(true, 30000);
+});
+
+const wss = new WebSocketServer({ server, path: '/ws', perMessageDeflate: false });
 
 wss.on('error', (err) => {
   console.warn('[WS Server Warning]', err);

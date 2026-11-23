@@ -214,21 +214,106 @@ function normalizeStore(parsed: any): ServerBookingStore {
   };
 }
 
+let bookingStoreCache: ServerBookingStore | null = null;
+let bookingSaveTimer: NodeJS.Timeout | null = null;
+let bookingPendingSave = false;
+let bookingFlushInProgress = false;
+let bookingExitHookRegistered = false;
+
+export function flushBookingStoreSync(): void {
+  if (!bookingStoreCache || (!bookingPendingSave && !bookingSaveTimer)) return;
+  if (bookingSaveTimer) {
+    clearTimeout(bookingSaveTimer);
+    bookingSaveTimer = null;
+  }
+  try {
+    const dir = path.dirname(BOOKING_STORE_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    bookingStoreCache.updatedAt = Date.now();
+    if (fs.existsSync(BOOKING_STORE_FILE)) {
+      try {
+        fs.copyFileSync(BOOKING_STORE_FILE, BOOKING_STORE_BACKUP_FILE);
+      } catch {}
+    }
+    const tmpFile = `${BOOKING_STORE_FILE}.tmp.${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    fs.writeFileSync(tmpFile, JSON.stringify(bookingStoreCache), 'utf-8');
+    fs.renameSync(tmpFile, BOOKING_STORE_FILE);
+    bookingPendingSave = false;
+  } catch (err) {
+    console.error('[ServerBooking] Failed flushing booking store:', err);
+  }
+}
+
+async function flushBookingStoreAsync(): Promise<void> {
+  if (!bookingStoreCache || !bookingPendingSave || bookingFlushInProgress) return;
+  bookingFlushInProgress = true;
+  bookingPendingSave = false;
+  const snapshotJson = JSON.stringify(bookingStoreCache);
+  const tmpFile = `${BOOKING_STORE_FILE}.tmp.${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  try {
+    const dir = path.dirname(BOOKING_STORE_FILE);
+    await fs.promises.mkdir(dir, { recursive: true });
+    if (fs.existsSync(BOOKING_STORE_FILE)) {
+      try {
+        await fs.promises.copyFile(BOOKING_STORE_FILE, BOOKING_STORE_BACKUP_FILE);
+      } catch {}
+    }
+    await fs.promises.writeFile(tmpFile, snapshotJson, 'utf-8');
+    await fs.promises.rename(tmpFile, BOOKING_STORE_FILE);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmpFile)) await fs.promises.unlink(tmpFile);
+    } catch {}
+    bookingPendingSave = true;
+    console.error('[ServerBooking] Failed async saving booking store:', err);
+  } finally {
+    bookingFlushInProgress = false;
+    if (bookingPendingSave && !bookingSaveTimer) {
+      bookingSaveTimer = setTimeout(() => {
+        bookingSaveTimer = null;
+        void flushBookingStoreAsync();
+      }, 400);
+    }
+  }
+}
+
+function registerBookingExitHooks(): void {
+  if (bookingExitHookRegistered) return;
+  bookingExitHookRegistered = true;
+  const onExit = () => flushBookingStoreSync();
+  process.once('beforeExit', onExit);
+  process.once('SIGINT', () => {
+    onExit();
+    process.exit(0);
+  });
+  process.once('SIGTERM', () => {
+    onExit();
+    process.exit(0);
+  });
+}
+
 function loadStore(): ServerBookingStore {
+  if (bookingStoreCache) {
+    return bookingStoreCache;
+  }
+  registerBookingExitHooks();
   for (const candidate of [BOOKING_STORE_FILE, BOOKING_STORE_BACKUP_FILE]) {
     try {
       if (fs.existsSync(candidate)) {
         const raw = fs.readFileSync(candidate, 'utf-8');
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed.carriages === 'object') {
-          return normalizeStore(parsed);
+          bookingStoreCache = normalizeStore(parsed);
+          return bookingStoreCache;
         }
       }
     } catch (err) {
       console.warn(`[ServerBooking] Failed reading ${path.basename(candidate)}:`, err);
     }
   }
-  return {
+  bookingStoreCache = {
     version: 3,
     updatedAt: Date.now(),
     carriages: {},
@@ -245,26 +330,20 @@ function loadStore(): ServerBookingStore {
       'eight-booking': 0,
     },
   };
+  return bookingStoreCache;
 }
 
 function saveStore(store: ServerBookingStore): void {
-  try {
-    const dir = path.dirname(BOOKING_STORE_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    store.updatedAt = Date.now();
-    if (fs.existsSync(BOOKING_STORE_FILE)) {
-      try {
-        fs.copyFileSync(BOOKING_STORE_FILE, BOOKING_STORE_BACKUP_FILE);
-      } catch {}
-    }
-    const tmpFile = `${BOOKING_STORE_FILE}.tmp.${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(store), 'utf-8');
-    fs.renameSync(tmpFile, BOOKING_STORE_FILE);
-  } catch (err) {
-    console.error('[ServerBooking] Failed saving booking store:', err);
+  bookingStoreCache = store;
+  store.updatedAt = Date.now();
+  bookingPendingSave = true;
+  if (bookingSaveTimer) {
+    clearTimeout(bookingSaveTimer);
   }
+  bookingSaveTimer = setTimeout(() => {
+    bookingSaveTimer = null;
+    void flushBookingStoreAsync();
+  }, 400);
 }
 
 function archiveOldCompletedCarriages(store: ServerBookingStore): boolean {

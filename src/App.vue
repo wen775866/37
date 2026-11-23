@@ -4019,7 +4019,15 @@ onMounted(() => {
 
   // Immediate check & balance refresh on initial mount
   fetchFreshProfile();
-  sessionCheckInterval = setInterval(fetchFreshProfile, 20000);
+  let lastBgProfileSync = Date.now();
+  sessionCheckInterval = setInterval(() => {
+    const now = Date.now();
+    const minInterval = wsConnected.value ? 90000 : 20000;
+    if (now - lastBgProfileSync >= minInterval) {
+      lastBgProfileSync = now;
+      fetchFreshProfile();
+    }
+  }, 20000);
 });
 
 onBeforeUnmount(() => {

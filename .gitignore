@@ -23,3 +23,4 @@ target
 *.log
 .DS_Store
 public/assets/aistudio
+.run_termux_*.sh

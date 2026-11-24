@@ -269,9 +269,20 @@ export async function parseJsonBody(req: any): Promise<any> {
     req.on('data', (chunk: any) => (data += chunk));
     req.on('end', () => {
       if (!data) return resolve({});
+      const contentType = String(req.headers?.['content-type'] || '').toLowerCase();
+      if (contentType.includes('application/x-www-form-urlencoded')) {
+        try {
+          return resolve(Object.fromEntries(new URLSearchParams(data)));
+        } catch {}
+      }
       try {
         resolve(JSON.parse(data));
       } catch (err) {
+        if (data.includes('=')) {
+          try {
+            return resolve(Object.fromEntries(new URLSearchParams(data)));
+          } catch {}
+        }
         reject(err);
       }
     });
@@ -1400,7 +1411,7 @@ export async function executeTelegramUpdate(
 
     case '/delphone':
     case '/removephone': {
-      const cleanInputPhone = arg1 ? arg1.trim().replace(/\D/g, '') : '';
+      const cleanInputPhone = arg1 ? normalizePhone(arg1) : '';
       if (!cleanInputPhone) {
         adminPendingStates.set(senderKey, { action: 'delphone', timestamp: Date.now() });
         reply = `🗑️ *【移出授权手机号】*\n\n👉 *请直接发送要移出的手机号*\n（无需任何斜杠或前缀，例如直接发送 \`13800138000\` 即可立即移出白名单并注销账号）：`;
@@ -1408,11 +1419,11 @@ export async function executeTelegramUpdate(
         break;
       }
 
-      const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+      const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
       currentAuth.delete(cleanInputPhone);
       db.authorizedPhones = Array.from(currentAuth);
 
-      const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+      const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
       currentAdmin.delete(cleanInputPhone);
       db.adminPhones = Array.from(currentAdmin);
 
@@ -1425,7 +1436,7 @@ export async function executeTelegramUpdate(
 
       const deletedUsers: string[] = [];
       for (const [pId, profile] of Object.entries(db.profiles)) {
-        const profPhone = String(profile.phone || '').trim().replace(/\D/g, '');
+        const profPhone = normalizePhone(profile.phone || '');
         if (profPhone === cleanInputPhone) {
           deletedUsers.push(`${profile.name} (${profile.username || pId})`);
           delete db.profiles[pId];
@@ -1460,24 +1471,24 @@ export async function executeTelegramUpdate(
         break;
       }
       const targetQuery = arg1.trim();
-      const cleanPhoneQuery = targetQuery.replace(/\D/g, '');
+      const cleanPhoneQuery = normalizePhone(targetQuery);
       const user = findUser(targetQuery, db) || (cleanPhoneQuery.length >= 5 ? findUser(cleanPhoneQuery, db) : null);
       if (user) {
         user.isAdmin = true;
         user.updatedAt = Date.now();
         if (user.phone) {
-          const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
-          currentAdmin.add(user.phone.replace(/\D/g, ''));
+          const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
+          currentAdmin.add(normalizePhone(user.phone));
           db.adminPhones = Array.from(currentAdmin);
         }
         saveDatabase(db);
         recordAdminLog('TG_SETADMIN', operator, user.name, `Telegram 设立茶客为管理员: ${user.name}`);
         reply = `👑 已成功将玩家 *${user.name}* (📱 \`${user.phone || user.id}\`) 设立为茶楼特权管理员！`;
       } else if (cleanPhoneQuery.length >= 5) {
-        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         currentAdmin.add(cleanPhoneQuery);
         db.adminPhones = Array.from(currentAdmin);
-        const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         currentAuth.add(cleanPhoneQuery);
         db.authorizedPhones = Array.from(currentAuth);
         saveDatabase(db);
@@ -1497,21 +1508,21 @@ export async function executeTelegramUpdate(
         break;
       }
       const targetQuery = arg1.trim();
-      const cleanPhoneQuery = targetQuery.replace(/\D/g, '');
+      const cleanPhoneQuery = normalizePhone(targetQuery);
       const user = findUser(targetQuery, db) || (cleanPhoneQuery.length >= 5 ? findUser(cleanPhoneQuery, db) : null);
       if (user) {
         user.isAdmin = false;
         user.updatedAt = Date.now();
         if (user.phone) {
-          const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
-          currentAdmin.delete(user.phone.replace(/\D/g, ''));
+          const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
+          currentAdmin.delete(normalizePhone(user.phone));
           db.adminPhones = Array.from(currentAdmin);
         }
         saveDatabase(db);
         recordAdminLog('TG_DELADMIN', operator, user.name, `Telegram 撤销管理员权限: ${user.name}`);
         reply = `✅ 已成功撤销玩家 *${user.name}* (📱 \`${user.phone || user.id}\`) 的管理员权限。`;
       } else if (cleanPhoneQuery.length >= 5) {
-        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         currentAdmin.delete(cleanPhoneQuery);
         db.adminPhones = Array.from(currentAdmin);
         saveDatabase(db);
@@ -1534,12 +1545,12 @@ export async function executeTelegramUpdate(
       }
 
       const query = arg1.trim();
-      const cleanPhoneQuery = query.replace(/\D/g, '');
+      const cleanPhoneQuery = normalizePhone(query);
       const user = findUser(query, db) || (cleanPhoneQuery.length >= 5 ? findUser(cleanPhoneQuery, db) : null);
 
       if (!user) {
         if (cleanPhoneQuery.length >= 5) {
-          const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+          const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
           if (currentAuth.has(cleanPhoneQuery)) {
             currentAuth.delete(cleanPhoneQuery);
             db.authorizedPhones = Array.from(currentAuth);
@@ -1559,15 +1570,15 @@ export async function executeTelegramUpdate(
 
       const pId = user.id;
       const userName = user.name;
-      const userPhone = String(user.phone || '').trim().replace(/\D/g, '');
+      const userPhone = normalizePhone(user.phone || '');
       delete db.profiles[pId];
 
       if (userPhone) {
-        const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const currentAuth = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         currentAuth.delete(userPhone);
         db.authorizedPhones = Array.from(currentAuth);
 
-        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         currentAdmin.delete(userPhone);
         db.adminPhones = Array.from(currentAdmin);
 
@@ -1853,7 +1864,15 @@ export async function handleApiRoute(
       const fileName = isDebug ? 'chess-game-debug.apk' : 'chess-game-release.apk';
       const repo = getGithubRepoName();
 
-      let fileSize = 4718592; // 4.50 MB
+      let diskBuildInfo: any = null;
+      try {
+        const infoFile = path.resolve(process.cwd(), 'apk', 'apk-build-info.json');
+        if (fs.existsSync(infoFile)) {
+          diskBuildInfo = JSON.parse(fs.readFileSync(infoFile, 'utf-8'));
+        }
+      } catch {}
+
+      let fileSize = Number(diskBuildInfo?.fileSize) >= 4200000 ? Number(diskBuildInfo.fileSize) : 6394293;
       let isLocal = false;
 
       // Check if authentic local APK exists
@@ -1877,7 +1896,7 @@ export async function handleApiRoute(
       if (!isLocal) {
         try {
           const headUrl = `https://ghproxy.net/https://github.com/${repo}/releases/download/latest-apk/${fileName}`;
-          const headResp = await fetch(headUrl, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+          const headResp = await fetch(headUrl, { method: 'HEAD', signal: AbortSignal.timeout(2500) });
           if (headResp.ok) {
             const cl = headResp.headers.get('content-length');
             if (cl) {
@@ -1890,14 +1909,6 @@ export async function handleApiRoute(
 
       const fileSizeMb = `${(fileSize / (1024 * 1024)).toFixed(2)} MB`;
 
-      let diskBuildInfo: any = null;
-      try {
-        const infoFile = path.resolve(process.cwd(), 'apk', 'apk-build-info.json');
-        if (fs.existsSync(infoFile)) {
-          diskBuildInfo = JSON.parse(fs.readFileSync(infoFile, 'utf-8'));
-        }
-      } catch {}
-
       sendJson(res, 200, {
         success: true,
         repo,
@@ -1907,7 +1918,7 @@ export async function handleApiRoute(
         isLocal,
         mtime: new Date().toISOString(),
         buildInfo: diskBuildInfo || {
-          version: '1.2.0',
+          version: '1.0.13',
           buildTime: 'GitHub Actions 官方全量编译 (正式签名版)',
           fileSizeMb,
           fileSize,
@@ -2391,7 +2402,7 @@ export async function handleApiRoute(
         const np = normalizePhone(ph);
         return np && (np === pPhone || np.endsWith(pPhone) || pPhone.endsWith(np));
       });
-      const isAllowed = !pPhone || allowedPhones.length === 0 ||
+      const isAllowed = !pPhone ||
         allowedPhones.some((p) => p === pPhone || p.endsWith(pPhone) || pPhone.endsWith(p)) ||
         adminPhones.some((p) => p === pPhone || p.endsWith(pPhone) || pPhone.endsWith(p));
 
@@ -2487,7 +2498,7 @@ export async function handleApiRoute(
         return true;
       }
       const transactions = db.pointsLedger?.[authUser.id] || [];
-      sendJson(res, 200, { success: true, transactions });
+      sendJson(res, 200, { success: true, ledger: transactions, transactions });
     } catch (e) {
       sendJson(res, 500, { success: false, error: String(e) });
     }
@@ -2711,7 +2722,7 @@ export async function handleApiRoute(
 
       const { allowedPhones, adminPhones } = getAllowedAndAdminPhones();
       const userPhone = normalizePhone(user.phone || '');
-      const isStillAuthorized = !userPhone || allowedPhones.length === 0 ||
+      const isStillAuthorized = !userPhone ||
         allowedPhones.some((p) => p === userPhone || p.endsWith(userPhone) || userPhone.endsWith(p)) ||
         adminPhones.some((p) => p === userPhone || p.endsWith(userPhone) || userPhone.endsWith(p));
 
@@ -3211,9 +3222,10 @@ export async function handleApiRoute(
   if (pathname === '/api/admin/whitelist/add' && method === 'POST') {
     try {
       const { phones, operator = 'Telegram Admin' } = await parseJsonBody(req);
-      const list = Array.isArray(phones)
+      const rawList = Array.isArray(phones)
         ? phones
         : String(phones || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+      const list = rawList.map((p: any) => normalizePhone(String(p))).filter(Boolean);
 
       if (list.length === 0) {
         sendJson(res, 400, { success: false, error: '请输入有效的手机号' });
@@ -3221,7 +3233,7 @@ export async function handleApiRoute(
       }
 
       const db = loadDatabase();
-      const current = new Set(db.authorizedPhones || []);
+      const current = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
       const added: string[] = [];
 
       for (const p of list) {
@@ -3233,7 +3245,7 @@ export async function handleApiRoute(
 
       // If phone was in revokedPhones, restore it
       if (db.revokedPhones && Array.isArray(db.revokedPhones)) {
-        db.revokedPhones = db.revokedPhones.filter((p: string) => !list.includes(p));
+        db.revokedPhones = db.revokedPhones.filter((p: string) => !list.includes(normalizePhone(p)));
       }
 
       db.authorizedPhones = Array.from(current);
@@ -3261,18 +3273,17 @@ export async function handleApiRoute(
   if (pathname === '/api/admin/whitelist/remove' && method === 'POST') {
     try {
       const { phone, operator = 'Telegram Admin' } = await parseJsonBody(req);
-      const cleanPhone = String(phone || '').trim().replace(/\D/g, '');
+      const cleanPhone = normalizePhone(phone || '');
       if (!cleanPhone) {
         sendJson(res, 400, { success: false, error: '请提供要移出的手机号' });
         return true;
       }
       const db = loadDatabase();
-      const current = new Set((db.authorizedPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
-      const existed = current.has(cleanPhone);
+      const current = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
       current.delete(cleanPhone);
       db.authorizedPhones = Array.from(current);
 
-      const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+      const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
       currentAdmin.delete(cleanPhone);
       db.adminPhones = Array.from(currentAdmin);
 
@@ -3284,7 +3295,7 @@ export async function handleApiRoute(
       // Purge registered profiles associated with this phone
       const deletedUsers: string[] = [];
       for (const [pId, profile] of Object.entries(db.profiles)) {
-        const pPhone = String(profile.phone || '').trim().replace(/\D/g, '');
+        const pPhone = normalizePhone(profile.phone || '');
         if (pPhone === cleanPhone) {
           deletedUsers.push(`${profile.name} (${pId})`);
           delete db.profiles[pId];
@@ -3325,15 +3336,15 @@ export async function handleApiRoute(
 
       const pId = user.id;
       const userName = user.name;
-      const userPhone = String(user.phone || '').trim().replace(/\D/g, '');
+      const userPhone = normalizePhone(user.phone || '');
       delete db.profiles[pId];
 
       if (userPhone) {
-        const current = new Set((db.authorizedPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const current = new Set((db.authorizedPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         current.delete(userPhone);
         db.authorizedPhones = Array.from(current);
 
-        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => String(p).trim().replace(/\D/g, '')));
+        const currentAdmin = new Set((db.adminPhones || []).map((p: any) => normalizePhone(p)).filter(Boolean));
         currentAdmin.delete(userPhone);
         db.adminPhones = Array.from(currentAdmin);
 

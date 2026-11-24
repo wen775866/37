@@ -325,12 +325,13 @@ export async function fetchCloudPointsLedger(userKey?: string): Promise<PointsTr
     const res = await fetch(resolveApiUrl('/api/points/ledger'));
     if (!res.ok) return local;
     const data = await res.json();
-    if (!data?.success || !Array.isArray(data.ledger)) return local;
+    const ledgerList = Array.isArray(data?.ledger) ? data.ledger : data?.transactions;
+    if (!data?.success || !Array.isArray(ledgerList)) return local;
 
     const now = Date.now();
     const seenIds = new Set<string>();
     const merged: PointsTransaction[] = [];
-    for (const item of [...data.ledger, ...local]) {
+    for (const item of [...ledgerList, ...local]) {
       if (!item || typeof item.amount !== 'number') continue;
       const createdAt = typeof item.createdAt === 'number' ? item.createdAt : now;
       if (now - createdAt > SEVEN_DAYS_MS) continue;

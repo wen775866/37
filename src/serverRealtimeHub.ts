@@ -1200,15 +1200,23 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             msg.gameType === 'yansan' || msg.gameType === 'shisanshui' || msg.gameType === 'mahjong'
               ? msg.gameType
               : 'lobby';
-          if (msg.sessionToken && msg.playerId) {
-            try {
-              const db = loadDatabase();
-              const prof = db.profiles?.[msg.playerId];
-              if (prof && prof.sessionToken && prof.sessionToken === msg.sessionToken && !prof.isBanned) {
-                (ws as any).authenticatedUserId = prof.id;
-                (ws as any).userId = prof.id;
-              }
-            } catch {}
+          if ('sessionToken' in msg) {
+            let authed = false;
+            if (msg.sessionToken && msg.playerId) {
+              try {
+                const db = loadDatabase();
+                const prof = db.profiles?.[msg.playerId];
+                if (prof && prof.sessionToken && prof.sessionToken === msg.sessionToken && !prof.isBanned) {
+                  (ws as any).authenticatedUserId = prof.id;
+                  (ws as any).userId = prof.id;
+                  authed = true;
+                }
+              } catch {}
+            }
+            if (!authed) {
+              delete (ws as any).authenticatedUserId;
+              (ws as any).userId = msg.playerId || undefined;
+            }
           }
           presenceTracker.updateClientGame((ws as any).socketId, targetGame, msg.sceneMode);
           if (msg.playerId) {

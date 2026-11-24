@@ -2284,7 +2284,7 @@ function dealNewMatch(forceReApply = false, overrideDeal?: any) {
         const isMultiplayerRealtime = !props.isPracticeMode && Boolean(props.ws) && !isBookingScene.value;
         if (!hasCompared.value) {
           if (!isWaitingShowdown.value) {
-            if (!isSetComplete.value) {
+            if (!isSetComplete.value || (isWatering.value && !mySpecialHand.value)) {
               applyStrategy('optimal', false);
             }
             handleCompare();
@@ -3598,7 +3598,14 @@ function onWsMessage(ev: MessageEvent) {
       const evt = msg.event || msg.payload;
       if (!evt) return;
 
-      if (evt.action === 'shisanshui_submit_hand') {
+      if (evt.action === 'shisanshui_submit_rejected') {
+        isWaitingShowdown.value = false;
+        submittedSeats.value.delete(mySeat.value);
+        try {
+          soundFX.playDaoshui();
+        } catch {}
+        showToast(evt.message || '⚠️ 倒水校验未通过，请重新调整三道牌型');
+      } else if (evt.action === 'shisanshui_submit_hand') {
         const s = Number(evt.seat);
         submittedSeats.value.add(s);
         if (evt.rawTiers) {
@@ -3624,7 +3631,7 @@ function onWsMessage(ev: MessageEvent) {
         }
         if (!hasCompared.value) {
           if (!isWaitingShowdown.value) {
-            if (!isSetComplete.value) {
+            if (!isSetComplete.value || (isWatering.value && !mySpecialHand.value)) {
               applyStrategy('optimal', false);
             }
             isWaitingShowdown.value = true;

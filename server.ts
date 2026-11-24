@@ -91,7 +91,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 const server = createServer(app);
 server.keepAliveTimeout = 65000;
@@ -161,14 +162,25 @@ app.get(['/chess-game-release.apk', '/app-latest.apk', '/*.apk'], (req, res, nex
 const distHtml = path.join(__dirname, 'dist', 'index.html');
 
 if (fs.existsSync(distHtml)) {
-  // Production mode: high-performance static caching headers for SVG assets
+  // Production mode: immutable caching ONLY for hashed Vite assets; always revalidate HTML & manifests
   app.use(
     express.static(path.join(__dirname, 'dist'), {
-      maxAge: '1y',
-      immutable: true,
+      setHeaders: (res, filePath) => {
+        const normalized = filePath.replace(/\\/g, '/');
+        if (normalized.includes('/assets/')) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+      },
     })
   );
   app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     res.sendFile(distHtml);
   });
 } else {

@@ -10,7 +10,7 @@
             <div class="flex items-center gap-2">
               <h3 class="text-base font-bold text-[#3C2C1E] font-serif-title">Android 最新正式版 APK</h3>
               <span class="text-[10px] px-2 py-0.5 rounded-full bg-[#EFE5D3] text-[#3C2C1E] border border-[#D8C7B0] font-mono font-bold">
-                最新代码打包
+                {{ apkVersionLabel }}
               </span>
             </div>
             <p class="text-[11px] text-[#6B5744] mt-0.5">
@@ -32,7 +32,7 @@
               <strong class="font-mono text-emerald-800 font-bold">chess-game-release.apk</strong>
             </span>
             <span class="text-[10px] px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 font-mono font-bold">
-              {{ apkInfo?.fileSizeMb || '4.50 MB' }} (纯净轻量版)
+              {{ apkSizeLabel }} (纯净轻量版)
             </span>
           </div>
 
@@ -60,7 +60,7 @@
               <div class="text-left">
                 <div class="text-xs font-bold flex items-center gap-1.5">
                   <span>线路 1：本站同源最新直链</span>
-                  <span class="text-[9px] px-1.5 py-0.2 rounded bg-emerald-800 text-white font-mono font-bold">100% 免代理 · 4.49 MB</span>
+                  <span class="text-[9px] px-1.5 py-0.2 rounded bg-emerald-800 text-white font-mono font-bold">100% 免代理 · {{ apkSizeLabel }}</span>
                 </div>
                 <div class="text-[10px] text-[#FAF4E8]/90 mt-0.5">当前服务器直接分发 · 包含麦克风语音聊天与全部新界面</div>
               </div>
@@ -68,7 +68,7 @@
             <span class="text-xs font-bold text-[#FAF4E8] group-hover:translate-x-0.5 transition-transform shrink-0">立即下载 ↓</span>
           </a>
 
-          <!-- 线路 2：GHProxy 官方 Release 加速直链 (4.49 MB 官方构建 · 免代理极速) -->
+          <!-- 线路 2：GHProxy 官方 Release 加速直链 -->
           <a 
             :href="ghproxyReleaseApkUrl" 
             download="chess-game-release.apk"
@@ -81,7 +81,7 @@
               <div class="text-left">
                 <div class="font-bold text-[#3C2C1E] flex items-center gap-1.5">
                   <span>线路 2：GHProxy 官方加速直链</span>
-                  <span class="text-[9px] px-1 py-0.2 rounded bg-[#EFE5D3] text-[#3C2C1E] font-mono border border-[#D8C7B0]">4.49 MB 官方签名版</span>
+                  <span class="text-[9px] px-1 py-0.2 rounded bg-[#EFE5D3] text-[#3C2C1E] font-mono border border-[#D8C7B0]">{{ apkSizeLabel }} 官方签名版</span>
                 </div>
                 <div class="text-[10px] text-[#6B5744]">GitHub 官方构建全量包，国内节点高速直连</div>
               </div>
@@ -133,7 +133,7 @@
           </div>
           <div>
             💡 <strong class="text-[#3C2C1E]">麦克风语音聊天说明：</strong>
-            最新 4.49 MB 安装包已集成系统底层录音权限声明与 WebView 麦克风适配。首次点击麦克风时系统若弹出授权窗口，请勾选“使用时允许”即可实时畅聊！
+            最新 {{ apkSizeLabel }} 安装包已集成系统底层录音权限声明与 WebView 麦克风适配。首次点击麦克风时系统若弹出授权窗口，请勾选“使用时允许”即可实时畅聊！
           </div>
         </div>
 
@@ -197,6 +197,8 @@ const debugApkFileName = 'chess-game-debug.apk';
 
 const apkInfo = ref<any>(null);
 const downloadTimestamp = ref(Date.now());
+const apkSizeLabel = computed(() => apkInfo.value?.fileSizeMb || apkInfo.value?.buildInfo?.fileSizeMb || '6.09 MB');
+const apkVersionLabel = computed(() => apkInfo.value?.buildInfo?.version ? `v${apkInfo.value.buildInfo.version}` : '最新正式版');
 
 // 1. 本站同源极速直链 (首选 · 100% 免代理 · 同源直接下 · 附带最新时间戳防缓存)
 const sameOriginReleaseApkUrl = computed(() => resolveApiUrl(`/api/download/apk?variant=release&t=${downloadTimestamp.value}`));

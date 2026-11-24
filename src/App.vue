@@ -1351,7 +1351,7 @@ import Game3DEffects from './components/effects/Game3DEffects.vue';
 import InsufficientCoinsModal from './components/InsufficientCoinsModal.vue';
 import ServerConfigModal from './components/ServerConfigModal.vue';
 import VictoryPosterModal, { VictoryPosterData } from './components/VictoryPosterModal.vue';
-import { getRemoteServerUrl, getWebSocketUrl, isNativeApkEnvironment, resolveApiUrl } from './utils/networkConfig';
+import { getRemoteServerUrl, getWebSocketUrl, isNativeApkEnvironment, resolveApiUrl, setAuthToken } from './utils/networkConfig';
 
 // 3 Canvas Games
 import YansanCanvas from './components/canvas/YansanCanvas.vue';
@@ -1846,7 +1846,7 @@ const downloadProgressText = ref('准备下载...');
 const downloadTimestamp = ref(Date.now());
 
 const directApkDownloadUrl = computed(() => {
-  return `/api/download/apk?variant=release&t=${downloadTimestamp.value}`;
+  return resolveApiUrl(`/api/download/apk?variant=release&t=${downloadTimestamp.value}`);
 });
 
 async function handleDirectDownloadApk(event?: MouseEvent) {
@@ -1871,7 +1871,7 @@ async function handleDirectDownloadApk(event?: MouseEvent) {
   // 1. 优先采用 Fetch + Blob 方案流式抓取并实时显示下载进度
   // 这种方式在电脑端、手机端、WebView、Iframe 内均 100% 成功，完全免疫 Iframe 弹窗拦截与 302 跨域问题
   try {
-    const downloadUrl = `/api/download/apk?variant=release&t=${Date.now()}`;
+    const downloadUrl = resolveApiUrl(`/api/download/apk?variant=release&t=${Date.now()}`);
     const response = await fetch(downloadUrl, {
       method: 'GET',
       headers: { 'Accept': 'application/vnd.android.package-archive' },
@@ -1879,7 +1879,7 @@ async function handleDirectDownloadApk(event?: MouseEvent) {
 
     if (response.ok) {
       const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : 4699557;
+      const total = contentLength ? parseInt(contentLength, 10) : 6394293;
       let loaded = 0;
 
       const reader = response.body?.getReader();
@@ -1933,9 +1933,9 @@ async function handleDirectDownloadApk(event?: MouseEvent) {
       iframe.style.display = 'none';
       document.body.appendChild(iframe);
     }
-    iframe.src = `/api/download/apk?variant=release&t=${Date.now()}`;
+    iframe.src = resolveApiUrl(`/api/download/apk?variant=release&t=${Date.now()}`);
   } catch {
-    window.location.href = `/api/download/apk?variant=release&t=${Date.now()}`;
+    window.location.href = resolveApiUrl(`/api/download/apk?variant=release&t=${Date.now()}`);
   }
 
   setTimeout(() => {
@@ -3886,9 +3886,11 @@ function onGameRestart() {
 
 function onUpdateProfile(p: UserProfile) {
   Object.assign(userProfile, p);
+  setAuthToken(userProfile.sessionToken || '');
   saveLocalProfile(userProfile);
   const freshRecords = loadLocalRecords(userProfile.phone || userProfile.id);
   matchRecords.splice(0, matchRecords.length, ...freshRecords);
+  notifyPresence(activeGameType.value || 'lobby', activeSceneMode.value || '');
   syncAndCheckProfile();
 }
 

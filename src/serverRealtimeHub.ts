@@ -3339,13 +3339,15 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                   }
                 }
 
-                const primaryCard = cardsToPlay[0];
+                const primaryCard = parsed.cards[0] || cardsToPlay[0];
+                const isTier3Or4 = parsed.type === '5_card' && (parsed.comboTier === 3 || parsed.comboTier === 4);
+                const resolvedSuitVal = parsed.suitVal || primaryCard?.suitVal || 1;
                 const authoritativeCombo = {
                   ...parsed,
                   seat,
                   primaryRank: parsed.rank,
-                  primarySuitVal: getYansanRankWeight(primaryCard?.rank || parsed.rank) * 10 + (primaryCard?.suitVal || parsed.suitVal || 1),
-                  flushSuit: (parsed.comboTier === 2 || parsed.comboTier === 5) ? (parsed.suitVal || primaryCard?.suitVal) : undefined,
+                  primarySuitVal: isTier3Or4 ? 0 : getYansanRankWeight(parsed.rank) * 10 + resolvedSuitVal,
+                  flushSuit: (parsed.comboTier === 2 || parsed.comboTier === 5) ? resolvedSuitVal : undefined,
                 };
                 room.moveCount = (room.moveCount || 0) + 1;
                 bs.actionSeq = (bs.actionSeq || 0) + 1;
@@ -3467,6 +3469,9 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                 if (typeof bs.turnSeat === 'number' && bs.turnSeat !== seat) {
                   return;
                 }
+                if (!bs.lastCombo || bs.lastCombo.seat === seat) {
+                  return;
+                }
                 room.moveCount = (room.moveCount || 0) + 1;
                 bs.actionSeq = (bs.actionSeq || 0) + 1;
                 bs.moveCount = room.moveCount;
@@ -3493,6 +3498,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                 const passThreshold = leaderFinished ? activeCount : Math.max(1, activeCount - 1);
                 if (bs.extraState.consecutivePasses >= passThreshold) {
                   bs.lastCombo = null;
+                  bs.extraState.consecutivePasses = 0;
                 }
 
                 let nextSeat = (seat - 1 + totalSeats) % totalSeats;
@@ -4123,12 +4129,14 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
         (room as any).deal.seatCards[currentSeat] = seatHand.filter((c) => !playedIds.has(c.id));
 
         const primaryCard = parsedAiCombo.cards[0];
+        const isTier3Or4 = parsedAiCombo.type === '5_card' && (parsedAiCombo.comboTier === 3 || parsedAiCombo.comboTier === 4);
+        const resolvedSuitVal = parsedAiCombo.suitVal || primaryCard?.suitVal || 1;
         const authoritativeCombo = {
           ...parsedAiCombo,
           seat: currentSeat,
           primaryRank: parsedAiCombo.rank,
-          primarySuitVal: getYansanRankWeight(primaryCard.rank) * 10 + (primaryCard.suitVal || 1),
-          flushSuit: (parsedAiCombo.comboTier === 2 || parsedAiCombo.comboTier === 5) ? (parsedAiCombo.suitVal || primaryCard.suitVal) : undefined,
+          primarySuitVal: isTier3Or4 ? 0 : getYansanRankWeight(parsedAiCombo.rank) * 10 + resolvedSuitVal,
+          flushSuit: (parsedAiCombo.comboTier === 2 || parsedAiCombo.comboTier === 5) ? resolvedSuitVal : undefined,
         };
         bs.lastCombo = authoritativeCombo;
         if (!bs.extraState.playedCardsHistory) bs.extraState.playedCardsHistory = [];
@@ -4250,6 +4258,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
         const passThreshold = leaderFinished ? activeCount : Math.max(1, activeCount - 1);
         if (bs.extraState.consecutivePasses >= passThreshold) {
           bs.lastCombo = null;
+          bs.extraState.consecutivePasses = 0;
         }
         room.turnSeat = nextSeat;
         bs.turnSeat = nextSeat;

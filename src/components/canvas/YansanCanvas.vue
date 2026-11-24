@@ -557,6 +557,7 @@ import {
   inferYansanAlliances,
   parseYansanCombo,
   isYansanComboDeductivelyUnbeatable,
+  shouldYansanAIQiangGong,
   YansanCard,
   YansanCombo,
   YansanPlayRecord,
@@ -1068,6 +1069,7 @@ let remoteWatchdogTimer: any = null;
 let dealingCeremonyTimer: any = null;
 let baodanDelayedTimer: any = null;
 let passClearTimer: any = null;
+let turnFlowEpoch = 0;
 const turnCountdown = ref(60);
 let countdownInterval: any = null;
 
@@ -1680,9 +1682,22 @@ function handleReconnectSync(msg: any) {
   if (bs?.handsCount && Array.isArray(bs.handsCount)) {
     for (let s = 0; s < 4; s++) {
       if (s !== mySeat.value && typeof bs.handsCount[s] === 'number') {
-        const targetLen = bs.handsCount[s];
-        if (hands[s] && hands[s].length > targetLen) {
+        const targetLen = Math.max(0, bs.handsCount[s]);
+        if (!hands[s]) hands[s] = [];
+        if (hands[s].length > targetLen) {
           hands[s] = hands[s].slice(0, targetLen);
+        } else if (hands[s].length < targetLen) {
+          const needed = targetLen - hands[s].length;
+          for (let k = 0; k < needed; k++) {
+            hands[s].push({
+              id: `hidden-${s}-${hands[s].length}`,
+              rank: 0,
+              suitVal: 0,
+              label: '',
+              suit: '♠',
+              isRed: false,
+            });
+          }
         }
       }
     }
@@ -1765,8 +1780,9 @@ function applyDeal(deal: any, forceReApply = false) {
   if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
   if (remoteWatchdogTimer) clearTimeout(remoteWatchdogTimer);
   if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
-  if (passClearTimer) clearTimeout(passClearTimer);
-  if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
+  if (passClearTimer) { clearTimeout(passClearTimer); passClearTimer = null; }
+  if (unbeatablePauseTimer) { clearTimeout(unbeatablePauseTimer); unbeatablePauseTimer = null; }
+  turnFlowEpoch++;
   if (danmakuTimer) clearTimeout(danmakuTimer);
   danmakuText.value = '';
   isQiangGongActive.value = false;
@@ -1855,8 +1871,9 @@ function dealNewMatch() {
   if (autoHostExecTimer) clearTimeout(autoHostExecTimer);
   if (remoteWatchdogTimer) clearTimeout(remoteWatchdogTimer);
   if (baodanDelayedTimer) clearTimeout(baodanDelayedTimer);
-  if (passClearTimer) clearTimeout(passClearTimer);
-  if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
+  if (passClearTimer) { clearTimeout(passClearTimer); passClearTimer = null; }
+  if (unbeatablePauseTimer) { clearTimeout(unbeatablePauseTimer); unbeatablePauseTimer = null; }
+  turnFlowEpoch++;
   if (danmakuTimer) clearTimeout(danmakuTimer);
   danmakuText.value = '';
   isQiangGongActive.value = false;
@@ -2830,7 +2847,12 @@ function executeBaoDanPlay(seat: number) {
  *    直接由系统判定为全场绝大，该玩家保留出牌权直接继续出牌！无需等待其他玩家点过！
  * 5. 正常逆时针流转
  */
-function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false) {
+function afterComboPlayed(
+  seat: number,
+  combo: Combo,
+  isRemote: boolean = false,
+  serverMeta?: { nextTurn?: number; unbeatableAutoClear?: boolean }
+) {
   const previousCombo = lastCombo.value && lastCombo.value.seat !== seat ? lastCombo.value : null;
 
   // 当打出黑桃3或黑桃A时，在桌面上公开揭晓对应的持有人
@@ -2905,30 +2927,41 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
     seat: combo.seat,
   };
 
-  // 严格全场公开推算原则（严禁使用出牌者自身私密手牌）：
-  // 仅依据全场已公开打出的牌 (playedCardsHistory) 与对手剩余张数进行绝对压制判定！
-  // 绝不能结合出牌者自身的剩余手牌来推算是否最大，否则一旦报全场最大连出，就会反向暴露该玩家手牌中隐藏的私密牌
+  // 严格全场公开推算原则（多人联机严禁使用出牌者自身私密手牌）：
+  // - 真人联机局：仅依据全场已公开打出的牌 (playedCardsHistory) 与对手剩余张数进行绝对压制判定，杜绝反向泄密；
+  // - 单机试玩局且为本家 (seat === mySeat) 出牌时：场上其余三家全是人机，不存在对真人泄密问题，
+  //   因此允许同时排除本家自己手中持有的牌（例如本家手里握着♠3而先打♥3，或握着对3先打对2），避免人机白白轮转抢走牌权！
   const all52 = createDeck();
   const knownPlayedCardIds = new Set<string>();
   for (const c of playedCardsHistory.value) knownPlayedCardIds.add(c.id);
+  if (props.isPracticeMode && seat === mySeat.value) {
+    for (const c of hands[mySeat.value] || []) knownPlayedCardIds.add(c.id);
+  }
 
   // 公开未出牌池 (在全场公开视角看来，所有未公开打出的牌均有可能在对手手中)
   const availableOpponentPool = all52.filter((c) => !knownPlayedCardIds.has(c.id));
   const otherActiveHands = hands.filter((_, idx) => idx !== seat && !finishedSeats.includes(idx));
   const maxOpponentCards = otherActiveHands.length > 0 ? Math.max(...otherActiveHands.map((h) => h.length)) : 0;
 
-  const isDeductivelyUnbeatable = isYansanComboDeductivelyUnbeatable(
+  const localUnbeatable = isYansanComboDeductivelyUnbeatable(
     yCombo,
     availableOpponentPool as any,
     maxOpponentCards
   );
+  const isDeductivelyUnbeatable =
+    !props.isPracticeMode && isRemote && typeof serverMeta?.unbeatableAutoClear === 'boolean'
+      ? serverMeta.unbeatableAutoClear
+      : localUnbeatable;
 
   const names = ['本家', '西席', '北席', '东席'];
 
   // 情况 1：该玩家已经出清手牌 (头游 / 二游)
   if (isFinished) {
     const rankTitle = finishedSeats.length === 1 ? '头游出清' : finishedSeats.length === 2 ? '二游出清' : '三游出清';
-    const nextS = getNextActiveSeat(seat);
+    const nextS =
+      !props.isPracticeMode && isRemote && typeof serverMeta?.nextTurn === 'number'
+        ? serverMeta.nextTurn
+        : getNextActiveSeat(seat);
 
     const hasSpade3 = combo.cards.some((c) => c.rank === 3 && c.suit === '♠');
     if (isDeductivelyUnbeatable || hasSpade3) {
@@ -2959,8 +2992,10 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
       emitStatus();
 
       if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
+      const pauseEpoch = turnFlowEpoch;
       unbeatablePauseTimer = setTimeout(() => {
-        if (winnerSeat.value !== null) return;
+        unbeatablePauseTimer = null;
+        if (winnerSeat.value !== null || pauseEpoch !== turnFlowEpoch) return;
 
         // 停顿 2.0 秒后清理桌面，正式由下家直接接风领出新一轮任意牌型
         lastCombo.value = null;
@@ -3058,8 +3093,10 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
     emitStatus();
 
     if (unbeatablePauseTimer) clearTimeout(unbeatablePauseTimer);
+    const pauseEpoch = turnFlowEpoch;
     unbeatablePauseTimer = setTimeout(() => {
-      if (winnerSeat.value !== null) return;
+      unbeatablePauseTimer = null;
+      if (winnerSeat.value !== null || pauseEpoch !== turnFlowEpoch) return;
 
       // 停顿 2.0 秒看清上一手绝大牌后，清理桌面并正式进入该席位领出新一轮牌型回合
       lastCombo.value = null;
@@ -3114,7 +3151,10 @@ function afterComboPlayed(seat: number, combo: Combo, isRemote: boolean = false)
   }
 
   // 正常逆时针流转至下一个存活玩家
-  const nextS = getNextActiveSeat(seat);
+  const nextS =
+    !props.isPracticeMode && isRemote && typeof serverMeta?.nextTurn === 'number'
+      ? serverMeta.nextTurn
+      : getNextActiveSeat(seat);
 
   turnSeat.value = nextS;
   drawTable();
@@ -3172,6 +3212,11 @@ function handlePlay() {
   if (typeof soundFX.playCardSnap === 'function') soundFX.playCardSnap(isSpecialHighTier);
   haptics.playCard();
 
+  if (unbeatablePauseTimer) { clearTimeout(unbeatablePauseTimer); unbeatablePauseTimer = null; }
+  if (passClearTimer) { clearTimeout(passClearTimer); passClearTimer = null; }
+  if (botTimer) { clearTimeout(botTimer); botTimer = null; }
+  turnFlowEpoch++;
+
   hands[mySeat.value] = myCards.filter((c) => !selectedIds.has(c.id));
   selectedIds.clear();
   lastCombo.value = combo;
@@ -3203,7 +3248,7 @@ function handlePlay() {
   }
 }
 
-function executePassFlow(seat: number, isRemote: boolean = false) {
+function executePassFlow(seat: number, isRemote: boolean = false, serverNextTurn?: number) {
   playHistory.value.push({
     seat,
     cards: [],
@@ -3229,7 +3274,11 @@ function executePassFlow(seat: number, isRemote: boolean = false) {
   const passThreshold = leaderFinished ? activeCount : activeCount - 1;
 
   if (consecutivePasses.value >= passThreshold) {
-    const leadSeat = leaderFinished ? getNextActiveSeat(lastLeader!) : lastLeader!;
+    stopTurnCountdown();
+    const leadSeat =
+      !props.isPracticeMode && isRemote && typeof serverNextTurn === 'number'
+        ? serverNextTurn
+        : (leaderFinished ? getNextActiveSeat(lastLeader!) : lastLeader!);
     consecutivePasses.value = 0;
     const names = ['本家', '西席', '北席', '东席'];
     for (const s of activeSeats) {
@@ -3243,8 +3292,10 @@ function executePassFlow(seat: number, isRemote: boolean = false) {
     emitStatus();
 
     if (passClearTimer) clearTimeout(passClearTimer);
+    const passEpoch = turnFlowEpoch;
     passClearTimer = setTimeout(() => {
-      if (winnerSeat.value !== null) return;
+      passClearTimer = null;
+      if (winnerSeat.value !== null || passEpoch !== turnFlowEpoch) return;
       lastCombo.value = null;
       for (const s of activeSeats) {
         if (s !== leadSeat) {
@@ -3274,7 +3325,10 @@ function executePassFlow(seat: number, isRemote: boolean = false) {
       }
     }, 1500);
   } else {
-    const nextS = getNextActiveSeat(seat);
+    const nextS =
+      !props.isPracticeMode && isRemote && typeof serverNextTurn === 'number'
+        ? serverNextTurn
+        : getNextActiveSeat(seat);
     turnSeat.value = nextS;
     const names = ['本家', '西席', '北席', '东席'];
     startTurnCountdown();
@@ -3302,6 +3356,9 @@ function handlePass() {
   if (!lastCombo.value || lastCombo.value.seat === mySeat.value) return;
   if (turnSeat.value !== mySeat.value || winnerSeat.value !== null) return;
   stopTurnCountdown();
+  if (unbeatablePauseTimer) { clearTimeout(unbeatablePauseTimer); unbeatablePauseTimer = null; }
+  if (passClearTimer) { clearTimeout(passClearTimer); passClearTimer = null; }
+  turnFlowEpoch++;
 
   hasPassedSeats[mySeat.value] = true;
   selectedIds.clear();
@@ -3449,9 +3506,44 @@ function handleRemoteGameEvent(evt: any) {
     }
   }
 
-  if (evt.seat === mySeat.value && !evt.autoPlay && !evt.autoPass) return;
   const s = evt.seat;
   const action = evt.action || (evt.autoPlay ? 'play' : evt.autoPass ? 'pass' : '');
+
+  // 若服务端回传本家手动操作的权威裁决结果（如绝大判定或轮次），与本地存在分歧时立即纠偏对齐
+  if (evt.seat === mySeat.value && !evt.autoPlay && !evt.autoPass) {
+    if (action === 'play' && typeof evt.nextTurn === 'number') {
+      if (evt.unbeatableAutoClear && evt.nextTurn === mySeat.value && turnSeat.value !== mySeat.value) {
+        if (passClearTimer) { clearTimeout(passClearTimer); passClearTimer = null; }
+        turnFlowEpoch++;
+        lastCombo.value = null;
+        consecutivePasses.value = 0;
+        turnSeat.value = mySeat.value;
+        seatStatus[mySeat.value] = '👑 全场绝大 · 该您领出新牌！';
+        startTurnCountdown();
+        drawTable();
+        emitStatus();
+      } else if (!evt.unbeatableAutoClear && evt.nextTurn !== turnSeat.value && !unbeatablePauseTimer) {
+        turnFlowEpoch++;
+        turnSeat.value = evt.nextTurn;
+        startTurnCountdown();
+        drawTable();
+        emitStatus();
+      }
+    } else if (action === 'pass' && typeof evt.nextTurn === 'number' && !passClearTimer && turnSeat.value !== evt.nextTurn) {
+      turnFlowEpoch++;
+      turnSeat.value = evt.nextTurn;
+      startTurnCountdown();
+      drawTable();
+      emitStatus();
+    }
+    return;
+  }
+
+  // 收到新的远端权威动作时，立即终止尚未落地的本地延迟清桌/绝大停顿定时器，防止反覆清掉新出牌
+  if (unbeatablePauseTimer) { clearTimeout(unbeatablePauseTimer); unbeatablePauseTimer = null; }
+  if (passClearTimer) { clearTimeout(passClearTimer); passClearTimer = null; }
+  turnFlowEpoch++;
+
   if (action === 'play') {
     const combo = evt.combo;
     if (!combo) return;
@@ -3468,14 +3560,17 @@ function handleRemoteGameEvent(evt: any) {
     soundFX.playCardSnap(isSpecialHighTier);
     soundFX.speakAction(combo.label, { isFemale: s === 1 });
     isFirstTurn.value = false;
-    afterComboPlayed(s, combo, true);
+    afterComboPlayed(s, combo, true, {
+      nextTurn: typeof evt.nextTurn === 'number' ? evt.nextTurn : undefined,
+      unbeatableAutoClear: typeof evt.unbeatableAutoClear === 'boolean' ? evt.unbeatableAutoClear : undefined,
+    });
   } else if (action === 'pass') {
     hasPassedSeats[s] = true;
     seatStatus[s] = '过牌';
     soundFX.playTap();
     soundFX.speakAction('pass', { isFemale: s === 1 });
     consecutivePasses.value++;
-    executePassFlow(s, true);
+    executePassFlow(s, true, typeof evt.nextTurn === 'number' ? evt.nextTurn : undefined);
   } else if (action === 'qianggong') {
     handleQiangGong(s, true, typeof evt.starterSeat === 'number' ? evt.starterSeat : undefined);
   } else if (action === 'surrender') {
@@ -4317,12 +4412,12 @@ function runBotTurns(startSeat: number) {
 
 function botStep(seat: number) {
   if (!selectedRoom.value || winnerSeat.value !== null || turnSeat.value !== seat) return;
+  stopTurnCountdown();
+  turnFlowEpoch++;
 
-  // 1. 强攻判断：同时持黑桃3和黑桃A，13张手牌均未动，且本局未曾点击过牌
+  // 1. 强攻判断：同时持黑桃3和黑桃A，13张手牌均未动，且本局未曾点击过牌，结合最优拆牌评估实力
   if (!isQiangGongActive.value && !hasPassedSeats[seat] && hands[seat].length === 13 && hasSpade3AndA(seat)) {
-    // 评估手牌实力：有强力大牌护体才选择强攻
-    const highCards = hands[seat].filter((c) => getRankWeight(c.rank) >= 10);
-    if (highCards.length >= 4 && Math.random() < 0.8) {
+    if (shouldYansanAIQiangGong(hands[seat] as any)) {
       handleQiangGong(seat);
       return;
     }
@@ -4414,8 +4509,10 @@ function botStep(seat: number) {
 
       // 留存 1.5 秒桌面牌型，让玩家看清全场过牌与谁获得领出权，随后清空桌面
       if (passClearTimer) clearTimeout(passClearTimer);
+      const passEpoch = turnFlowEpoch;
       passClearTimer = setTimeout(() => {
-        if (winnerSeat.value !== null) return;
+        passClearTimer = null;
+        if (winnerSeat.value !== null || passEpoch !== turnFlowEpoch) return;
         lastCombo.value = null;
         for (const s of activeSeats) {
           if (s !== leadSeat) {
@@ -4532,7 +4629,7 @@ function onWsMessage(ev: MessageEvent) {
         return;
       }
 
-      if (isFinishEvt || evt.seat !== mySeat.value || evt.autoPlay || evt.autoPass) {
+      if (isFinishEvt || evt.action === 'play' || evt.action === 'pass' || evt.action === 'qianggong' || evt.autoPlay || evt.autoPass) {
         handleRemoteGameEvent(evt);
       }
     }

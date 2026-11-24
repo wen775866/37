@@ -5,6 +5,8 @@ import {
   canBeatYansanCombo,
   getYansanSmartAIPlay,
   isYansanComboDeductivelyUnbeatable,
+  findYansanWinningSequence,
+  shouldYansanAIQiangGong,
   calculateYansanSettlement,
 } from '../src/engine/yansanRules.ts';
 import {
@@ -86,25 +88,224 @@ function runYansanTests() {
   });
   assert(aiPlay.cards.some((c) => c.id === '4-♦'), 'First turn lead must include ♦4');
 
-  // 3. Deductive unbeatable check when all higher cards are already played
-  const fullPoolExceptSpade3 = [
-    yCard(3, '♠'), yCard(3, '♥'), yCard(3, '♣'), yCard(3, '♦'),
-    yCard(15, '♠'), yCard(15, '♥'), yCard(15, '♣'), yCard(15, '♦'),
-  ];
-  const playedEverythingElse: YansanCard[][] = [
-    [yCard(3, '♥'), yCard(3, '♣'), yCard(3, '♦')],
-    fullPoolExceptSpade3.slice(4),
-    [],
-    [],
-  ];
+  // 3. Deductive unbeatable check (3-arg signature: combo, availablePool, maxOpponentHandSize)
   const combo3S = parseYansanCombo([yCard(3, '♠')])!;
   assert.equal(
-    isYansanComboDeductivelyUnbeatable(combo3S, [yCard(4, '♣')], playedEverythingElse, [1, 5, 5, 5]),
+    isYansanComboDeductivelyUnbeatable(combo3S, [yCard(4, '♣'), yCard(15, '♠')], 5),
     true,
-    '♠3 single must be deductively unbeatable'
+    '♠3 single must be deductively unbeatable even against ♠2 in pool'
   );
 
-  // 4. 2v2 vs 1v3 settlements zero-sum check
+  const combo3H = parseYansanCombo([yCard(3, '♥')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(combo3H, [yCard(3, '♠'), yCard(15, '♠')], 5),
+    false,
+    '♥3 single is not unbeatable while ♠3 remains in availablePool'
+  );
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(combo3H, [yCard(15, '♠'), yCard(14, '♠')], 5),
+    true,
+    '♥3 single must be unbeatable once ♠3 is excluded from availablePool (played or held by practice player)'
+  );
+
+  const pair3SpadeDiamond = parseYansanCombo([yCard(3, '♠'), yCard(3, '♦')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(pair3SpadeDiamond, [yCard(3, '♥'), yCard(3, '♣'), yCard(15, '♠')], 5),
+    true,
+    '对3 (♠3+♦3) must be deductively unbeatable against remaining ♥3+♣3'
+  );
+
+  const pair3HeartClub = parseYansanCombo([yCard(3, '♥'), yCard(3, '♣')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(pair3HeartClub, [yCard(3, '♠'), yCard(3, '♦')], 5),
+    false,
+    '对3 (♥3+♣3) cannot be marked unbeatable while ♠3+♦3 remain in pool'
+  );
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(pair3HeartClub, [yCard(3, '♦'), yCard(15, '♠'), yCard(15, '♥')], 5),
+    true,
+    '对3 (♥3+♣3) must be unbeatable once ♠3 is excluded (only ♦3 remains of 3s)'
+  );
+
+  const triplet3 = parseYansanCombo([yCard(3, '♠'), yCard(3, '♥'), yCard(3, '♣')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(triplet3, [yCard(3, '♦'), yCard(15, '♠'), yCard(15, '♥'), yCard(15, '♣')], 5),
+    true,
+    '三条3 must be deductively unbeatable'
+  );
+
+  const triplet2 = parseYansanCombo([yCard(15, '♠'), yCard(15, '♥'), yCard(15, '♣')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(triplet2, [yCard(3, '♠'), yCard(3, '♥'), yCard(14, '♠'), yCard(14, '♥'), yCard(14, '♣')], 5),
+    true,
+    '三条2 must be unbeatable when fewer than 3 threes remain in pool'
+  );
+
+  const fourTwo = parseYansanCombo([yCard(15, '♠'), yCard(15, '♥'), yCard(15, '♣'), yCard(15, '♦'), yCard(4, '♣')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(fourTwo, [yCard(3, '♠'), yCard(4, '♠'), yCard(5, '♠'), yCard(6, '♠'), yCard(7, '♠')], 5),
+    false,
+    '四带一2 is beatable if a straight flush can exist in pool with maxOpponentHandSize >= 5'
+  );
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(fourTwo, [yCard(3, '♠'), yCard(4, '♠'), yCard(5, '♠'), yCard(6, '♠'), yCard(7, '♠')], 4),
+    true,
+    '四带一2 must be unbeatable when maxOpponentHandSize < 5'
+  );
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(fourTwo, [yCard(3, '♠'), yCard(3, '♥'), yCard(3, '♣'), yCard(14, '♠'), yCard(13, '♥')], 5),
+    true,
+    '四带一2 must be unbeatable when no higher four-of-a-kind or straight flush exists in pool'
+  );
+
+  const royalSpadeSF = parseYansanCombo([yCard(3, '♠'), yCard(4, '♠'), yCard(5, '♠'), yCard(6, '♠'), yCard(7, '♠')])!;
+  assert.equal(
+    isYansanComboDeductivelyUnbeatable(royalSpadeSF, [yCard(3, '♥'), yCard(4, '♥'), yCard(5, '♥'), yCard(6, '♥'), yCard(7, '♥')], 13),
+    true,
+    '♠3-4-5-6-7 同花顺 must be deductively unbeatable'
+  );
+
+  // 4. SmartAI must NEVER answer a single/pair/triplet with a 5-card combo during emergency follow
+  const handWith5CardOnly = [
+    yCard(4, '♠'), yCard(5, '♠'), yCard(6, '♠'), yCard(7, '♠'), yCard(8, '♠'),
+  ];
+  const emergencyFollowSingle = getYansanSmartAIPlay(handWith5CardOnly, single3S, {
+    seat: 1,
+    handsCount: [1, 5, 8, 8],
+  });
+  assert.equal(emergencyFollowSingle.cards, null, 'AI must pass rather than answer a single with a 5-card combo');
+
+  const highPairA = parseYansanCombo([yCard(14, '♠'), yCard(14, '♥')])!;
+  const emergencyFollowPair = getYansanSmartAIPlay(handWith5CardOnly, highPairA, {
+    seat: 1,
+    handsCount: [1, 5, 8, 8],
+  });
+  assert.equal(emergencyFollowPair.cards, null, 'AI must pass rather than answer a pair with a 5-card combo');
+
+  // 5. Smart AI control preservation: never waste ♥3/♣3/♦3 or 对3 on tiny 5/对4 midgame
+  const handWithHeart3And9 = [
+    yCard(3, '♥'), yCard(9, '♠'), yCard(4, '♣'), yCard(4, '♦'), yCard(7, '♠'), yCard(7, '♥'),
+  ];
+  const single5S = parseYansanCombo([yCard(5, '♠')])!;
+  single5S.seat = 0;
+  const follow5 = getYansanSmartAIPlay(handWithHeart3And9, single5S, {
+    seat: 1,
+    handsCount: [6, 6, 8, 8],
+  });
+  assert(follow5.cards && follow5.cards[0].rank === 9, 'AI must play 9♠ instead of wasting ♥3 on a 5♠');
+
+  const handWithHeart3AndStraight = [
+    yCard(3, '♥'), yCard(4, '♣'), yCard(5, '♠'), yCard(6, '♥'), yCard(7, '♦'), yCard(8, '♠'),
+  ];
+  const holdHeart3 = getYansanSmartAIPlay(handWithHeart3AndStraight, single5S, {
+    seat: 1,
+    handsCount: [6, 6, 8, 8],
+  });
+  assert.equal(holdHeart3.cards, null, 'AI must pass rather than waste ♥3 or break 4-8 straight on a tiny 5');
+
+  const pair4Target = parseYansanCombo([yCard(4, '♠'), yCard(4, '♥')])!;
+  pair4Target.seat = 0;
+  const handWithPair3AndPair8 = [
+    yCard(3, '♥'), yCard(3, '♦'), yCard(8, '♠'), yCard(8, '♥'), yCard(10, '♣'), yCard(11, '♦'),
+  ];
+  const followPair4 = getYansanSmartAIPlay(handWithPair3AndPair8, pair4Target, {
+    seat: 1,
+    handsCount: [6, 6, 8, 8],
+  });
+  assert(followPair4.cards && followPair4.cards[0].rank === 8, 'AI must play 对8 instead of wasting 对3 on 对4');
+
+  // 6. Smart AI midgame free lead: never dump 同花顺 / 四带一 ahead of weaker 顺子
+  const handStraightAndSF = [
+    yCard(4, '♠'), yCard(5, '♠'), yCard(6, '♠'), yCard(7, '♠'), yCard(8, '♠'),
+    yCard(4, '♥'), yCard(5, '♣'), yCard(6, '♦'), yCard(7, '♥'), yCard(8, '♣'),
+    yCard(9, '♦'), yCard(10, '♣'),
+  ];
+  const freeLeadRes = getYansanSmartAIPlay(handStraightAndSF, null, {
+    seat: 1,
+    handsCount: [10, 12, 10, 10],
+  });
+  const freeLeadCombo = parseYansanCombo(freeLeadRes.cards || []);
+  assert(
+    freeLeadCombo && freeLeadCombo.type === '5_card' && freeLeadCombo.comboTier === 1,
+    'Midgame free lead must shed ordinary 顺子 before 同花顺'
+  );
+
+  // 7. Smart AI must block 1-card unknown seat (never feed small single)
+  const handBlockingBaodan = [yCard(4, '♣'), yCard(9, '♠'), yCard(9, '♥'), yCard(11, '♦')];
+  const blockUnknown1Card = getYansanSmartAIPlay(handBlockingBaodan, null, {
+    seat: 2,
+    handsCount: [8, 1, 4, 8], // seat 1 (unknown) only has 1 card left!
+  });
+  assert(
+    blockUnknown1Card.cards && blockUnknown1Card.cards.length === 2 && blockUnknown1Card.cards[0].rank === 9,
+    'AI must lead pair/combo rather than feeding a 1-card unknown player'
+  );
+
+  // 8. Smart AI in 1v3 QiangGong must never block ally when downstream is also ally
+  const qgAllySingle6 = parseYansanCombo([yCard(6, '♣')])!;
+  qgAllySingle6.seat = 0;
+  const aiDefenseHand = [yCard(10, '♠'), yCard(11, '♥'), yCard(4, '♦'), yCard(5, '♦'), yCard(7, '♣'), yCard(9, '♣')];
+  const yieldInQG = getYansanSmartAIPlay(aiDefenseHand, qgAllySingle6, {
+    seat: 2, // seat 2 -> downstream is seat 1 (ally!) while seat 3 is QiangGong solo enemy
+    handsCount: [6, 6, 6, 6],
+    isQiangGong: true,
+    qiangGongSeat: 3,
+  });
+  assert.equal(yieldInQG.cards, null, 'AI must yield to ally when downstream is also an ally in 1v3');
+
+  // 9. N-step forced win sequence & follow snatching forced win
+  const threeStepHand = [
+    yCard(3, '♠'),
+    yCard(15, '♠'), yCard(15, '♥'),
+    yCard(4, '♣'), yCard(5, '♦'), yCard(6, '♥'), yCard(7, '♠'), yCard(8, '♣'),
+  ];
+  const threeStepWin = findYansanWinningSequence(
+    threeStepHand,
+    [yCard(14, '♠'), yCard(13, '♣'), yCard(9, '♦'), yCard(10, '♥'), yCard(11, '♠')], // no 3s left in pool
+    5
+  );
+  assert(threeStepWin && threeStepWin.length > 0, 'N-step solver must recognize ♠3 -> 对2 -> 顺子 forced win');
+
+  const singleKS = parseYansanCombo([yCard(13, '♠')])!;
+  singleKS.seat = 1;
+  // Case A: All other 3s are played, so ♥2 itself is deductively unbeatable and keeps ♠3+♠2+4-8 forced win
+  const followForcedWin2 = getYansanSmartAIPlay(threeStepHand, singleKS, {
+    seat: 2,
+    handsCount: [5, 5, 8, 5],
+    seatPlayedCards: [[yCard(3, '♥'), yCard(3, '♣'), yCard(3, '♦')], [], [], []],
+  });
+  assert(
+    followForcedWin2.cards && followForcedWin2.cards.length === 1 && followForcedWin2.cards[0].rank === 15 && followForcedWin2.tacticalIntent === 'win_clear',
+    'AI should snatch forced-win lead with unbeatable ♥2 when all 3s are accounted for'
+  );
+
+  // Case B: ♦3 is still in opponent hands, so 2s are beatable; AI must snatch lead with ♠3 so 对2+顺子 wins guaranteed
+  const followForcedWin3 = getYansanSmartAIPlay(threeStepHand, singleKS, {
+    seat: 2,
+    handsCount: [5, 5, 8, 5],
+    seatPlayedCards: [[yCard(3, '♥'), yCard(3, '♣')], [], [], []],
+  });
+  assert(
+    followForcedWin3.cards && followForcedWin3.cards.length === 1 && followForcedWin3.cards[0].rank === 3 && followForcedWin3.tacticalIntent === 'win_clear',
+    'AI must snatch lead with ♠3 when ♦3 is still out and remaining hand (对2+顺子) forms a 100% forced win'
+  );
+
+  // 10. Smart QiangGong evaluation rejects weak scattered hands and accepts monster hands
+  const weakQGHand = [
+    yCard(3, '♠'), yCard(14, '♠'), yCard(13, '♦'), yCard(13, '♣'),
+    yCard(4, '♣'), yCard(4, '♥'), yCard(6, '♦'), yCard(7, '♠'), yCard(9, '♥'),
+    yCard(9, '♣'), yCard(10, '♦'), yCard(11, '♣'), yCard(12, '♥'),
+  ];
+  assert.equal(shouldYansanAIQiangGong(weakQGHand), false, 'Weak scattered hand with ♠3+♠A must not QiangGong');
+
+  const monsterQGHand = [
+    yCard(3, '♠'), yCard(14, '♠'), yCard(15, '♠'), yCard(15, '♥'),
+    yCard(12, '♠'), yCard(12, '♥'), yCard(12, '♣'), yCard(12, '♦'),
+    yCard(4, '♣'), yCard(5, '♦'), yCard(6, '♥'), yCard(7, '♠'), yCard(8, '♣'),
+  ];
+  assert.equal(shouldYansanAIQiangGong(monsterQGHand), true, 'Monster low-turn hand with ♠3+♠A+对2+四带一+顺子 should QiangGong');
+
+  // 11. 2v2 vs 1v3 settlements zero-sum check
   const s2v2 = calculateYansanSettlement('5-10', 0, false, null, 0, 2, [0, 2]);
   assert.equal(s2v2.seatScores.reduce((a, b) => a + b, 0), 0, '2v2 settlement must sum to 0');
   assert.equal(s2v2.seatScores[0], 10);

@@ -7,17 +7,17 @@ export function calculateMahjongSettlement(payload: MahjongMovePayload): Mahjong
   const isWin = payload.winner === 0;
   const isTie = payload.winner === -1;
 
+  const basePerOpponent = typeof payload.payoutPerOpponent === 'number' && !Number.isNaN(payload.payoutPerOpponent)
+    ? payload.payoutPerOpponent
+    : 10;
+
   const scorePoints = typeof payload.rewardCoins === 'number'
     ? payload.rewardCoins
-    : (isWin
-        ? (payload.payoutPerOpponent ? payload.payoutPerOpponent * 3 : 70)
-        : -(payload.payoutPerOpponent || 30));
+    : (isWin ? basePerOpponent * 3 : (isTie ? 0 : -basePerOpponent));
 
   const coinsDelta = typeof payload.rewardCoins === 'number'
     ? payload.rewardCoins
-    : (isWin
-        ? (payload.payoutPerOpponent ? payload.payoutPerOpponent * 3 : 210)
-        : (isTie ? 0 : -(payload.payoutPerOpponent || 70)));
+    : (isWin ? basePerOpponent * 3 : (isTie ? 0 : -basePerOpponent));
 
   const ratingDelta = isWin ? 20 : (isTie ? 0 : -10);
   const detailText = payload.detail || payload.detailText || (isWin ? '麻将自摸和牌' : (isTie ? '麻将荒庄流局' : '对手率先自摸和出'));

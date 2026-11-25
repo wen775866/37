@@ -183,330 +183,22 @@
 
 
 
-      <!-- Integrated Single-Layer Settlement Overlay (羊皮纸典雅茶楼主题，高对比度清晰排版，零滚动全显) -->
-      <div
-        v-if="hasWon"
-        class="absolute inset-0 z-40 flex items-center justify-center p-1 sm:p-2 select-none bg-black/75 backdrop-blur-md overflow-hidden"
-      >
-        <div
-          class="w-full max-w-4xl max-h-[98%] sm:max-h-[96%] rounded-xl sm:rounded-2xl border-2 border-[#C89B3C] shadow-[0_20px_60px_rgba(30,20,10,0.65),0_0_35px_rgba(200,155,60,0.25)] flex flex-col justify-between p-2 sm:p-2.5 gap-1 sm:gap-1.5 overflow-hidden text-[#3C2C1E] my-auto relative"
-          :style="{
-            backgroundColor: '#EFE5D3',
-            backgroundImage: `radial-gradient(ellipse at 50% 30%, #FAF4E8 0%, #EFE5D3 65%, #E5D7C2 100%), url(&quot;data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.035'/%3E%3C/svg%3E&quot;)`
-          }"
-        >
-          <!-- 1. Header: 结果状态、庄位与输赢筹码 (高度紧凑，底边距压缩) -->
-          <div class="flex items-center justify-between gap-2 pb-1 border-b border-[#D8C7B0] shrink-0">
-            <!-- Left: Result Title & Winner Info -->
-            <div class="flex items-center gap-2 text-left">
-              <span class="text-2xl sm:text-3xl filter drop-shadow-xs">
-                {{ winningBreakdown.rewardCoins > 0 ? '🏆' : '🍂' }}
-              </span>
-              <div>
-                <div class="flex items-center gap-1.5">
-                  <h3 class="text-sm sm:text-base md:text-lg font-black text-[#8B2516] font-serif-title tracking-wide leading-none">
-                    {{ winningBreakdown.isFourHongzhong
-                      ? '四张红中 · 天降大满贯！'
-                      : (winningBreakdown.winnerSeat === 0 ? '自摸和牌 · 雀圣大捷！' : `【${settledWinnerLabel}】自摸和牌`) }}
-                  </h3>
-                  <span
-                    class="px-1.5 py-0.2 rounded text-[10px] sm:text-xs font-bold leading-none"
-                    :class="winningBreakdown.winnerSeat === 0 ? 'bg-[#FAF0E2] text-[#8B2516] border border-[#C89B3C]/70' : 'bg-[#E5D7C2] text-[#5C4533] border border-[#D8C7B0]'"
-                  >
-                    {{ winningBreakdown.winnerSeat === 0 ? '本席自摸' : '对手自摸' }}
-                  </span>
-                </div>
-                <p class="text-[11px] sm:text-xs text-[#6B5744] font-medium mt-0.5 leading-tight">
-                  底分 10 分 · 下局由自摸者【{{ settledWinnerLabel }}】坐庄率先出牌
-                </p>
-              </div>
-            </div>
-
-            <!-- Right: Hit Ma & Reward Coins Badges (High Contrast, Bold Numbers, Compact) -->
-            <div class="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-              <!-- Hit Ma Pill -->
-              <div class="px-2 py-0.5 sm:py-1 rounded-lg bg-[#E6F4EA] border border-[#34A853]/60 text-[#137333] flex items-center gap-1 shadow-xs font-bold">
-                <span class="text-[11px] sm:text-xs">🎯 中码:</span>
-                <span class="text-xs sm:text-sm font-mono font-black text-[#137333]">
-                  {{ winningBreakdown.hitMaCount }} / {{ winningBreakdown.maCount }} 码
-                </span>
-              </div>
-
-              <!-- Coins Won/Lost Pill -->
-              <div
-                class="px-2.5 sm:px-3 py-0.5 sm:py-1 rounded-lg flex items-center gap-1 shadow-xs"
-                :class="winningBreakdown.rewardCoins >= 0
-                  ? 'bg-[#FEF7E0] border border-[#F9AB00] text-[#B06000]'
-                  : 'bg-[#FCE8E6] border border-[#EA4335] text-[#C5221F]'"
-              >
-                <span class="text-[11px] sm:text-xs font-bold">🪙 {{ winningBreakdown.rewardCoins >= 0 ? '赢得:' : '扣除:' }}</span>
-                <span
-                  class="text-sm sm:text-base font-mono font-black tabular-nums"
-                  :class="winningBreakdown.rewardCoins >= 0 ? 'text-[#B06000]' : 'text-[#C5221F]'"
-                >
-                  {{ winningBreakdown.rewardCoins >= 0 ? `+${winningBreakdown.rewardCoins}` : `${winningBreakdown.rewardCoins}` }} 分
-                </span>
-                <span class="text-[10px] opacity-80 font-normal">
-                  ({{ winningBreakdown.payoutPerOpponent }}分/家)
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 2. Winner Hand & Melds (单层平铺，紧凑内边距与精确高度) -->
-          <div class="flex flex-col gap-0.5 shrink-0 bg-[#FAF4E8]/95 rounded-lg sm:rounded-xl px-2 py-1 border border-[#D8C7B0] shadow-xs">
-            <div class="flex items-center justify-between text-[11px] sm:text-xs text-[#78350F] font-bold font-serif-title leading-tight">
-              <span class="flex items-center gap-1">
-                <span>🀄</span>
-                <span>【{{ settledWinnerLabel }}】胡牌手牌与亮副全貌</span>
-              </span>
-              <span class="text-[#78695C] font-mono text-[10px]">
-                共 {{ settledWinningHand.length + (settledWinningMelds.length * 3) }} 张
-              </span>
-            </div>
-
-            <!-- Single Row of Tiles: Melds + Standing Hand Tiles -->
-            <div class="flex items-center justify-start sm:justify-center gap-1 sm:gap-1.5 overflow-x-auto py-0.5 max-w-full">
-              <!-- Melded sets (碰/杠亮副) -->
-              <template v-for="(set, sIdx) in settledWinningMelds" :key="`meld-${sIdx}`">
-                <div class="flex items-center gap-0.5 bg-[#EFE5D3] px-1 py-0.5 rounded-lg border border-[#C89B3C]/50 shrink-0">
-                  <span class="text-[9px] font-bold text-[#8B2516] mr-0.5">{{ set.length === 4 ? '杠' : '碰' }}</span>
-                  <template v-for="(tile, tIdx) in set" :key="`meld-t-${tIdx}`">
-                    <div class="relative h-[34px] sm:h-[40px] w-[23px] sm:w-[27px] rounded bg-gradient-to-b from-[#FFFDF8] via-[#FAF4E8] to-[#EFE2C8] border border-[#C89B3C]/90 shadow-2xs flex items-center justify-center p-0.5 shrink-0">
-                      <img :src="getMahjongImagePath(tile)" :alt="tile.text" class="w-full h-full object-contain pointer-events-none drop-shadow-2xs" />
-                    </div>
-                  </template>
-                </div>
-              </template>
-
-              <!-- Melds divider if any -->
-              <div
-                v-if="settledWinningMelds.length > 0"
-                class="w-px h-6 bg-[#D8C7B0] shrink-0 mx-0.5"
-              ></div>
-
-              <!-- Hand Standing Tiles (Sorted cleanly: Wan -> Tiao -> Tong -> Zi) -->
-              <template v-for="(tile, tIdx) in settledWinningHand" :key="tile.id || `hand-${tIdx}`">
-                <div class="relative h-[38px] sm:h-[46px] w-[26px] sm:w-[32px] shrink-0 rounded-md sm:rounded-lg bg-gradient-to-b from-[#FFFDF8] via-[#FAF4E8] to-[#EFE2C8] border border-[#C89B3C]/80 shadow-xs flex items-center justify-center p-0.5">
-                  <img :src="getMahjongImagePath(tile)" :alt="tile.text" class="w-full h-full object-contain drop-shadow-2xs pointer-events-none" />
-                </div>
-              </template>
-            </div>
-          </div>
-
-          <!-- 3. Reward Ma Tiles (开码结算：横幅间距压缩，单行平铺，牌名牌面全显) -->
-          <div class="flex flex-col gap-0.5 shrink-0 bg-[#FAF4E8]/95 rounded-lg sm:rounded-xl px-2 py-1 border border-[#D8C7B0] shadow-xs">
-            <div class="flex items-center justify-between text-[11px] sm:text-xs leading-tight">
-              <span class="flex items-center gap-1.5 font-bold font-serif-title text-[#78350F]">
-                <span>🎯</span>
-                <span>开码奖码结果</span>
-                <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-[#FEF7E0] text-[#B06000] border border-[#F9AB00]/50 font-mono font-bold">
-                  开 {{ winningBreakdown.maCount }} 码 · 命中 {{ winningBreakdown.hitMaCount }} 码
-                </span>
-              </span>
-              <span class="text-[10px] sm:text-[11px] text-[#6B5744] font-mono">
-                {{ winningBreakdown.isFourHongzhong ? '🌟 四张红中：所有开码全中满贯！' : '命中【一、五、九、东风、红中】每中1码+10分' }}
-              </span>
-            </div>
-
-            <!-- Opened Ma Tiles Row (Horizontal centered, sized compactly for absolute zero vertical overflow) -->
-            <div class="flex items-center justify-center gap-1 sm:gap-2 flex-wrap py-0.5">
-              <template v-for="(tile, idx) in (winningBreakdown.rewardMaTiles || [])" :key="tile.id || `ma-${idx}`">
-                <div
-                  class="relative flex flex-col items-center justify-between rounded-lg p-0.5 transition-all shadow-xs select-none"
-                  :class="isYiWuJiuMa(tile)
-                    ? 'bg-gradient-to-b from-[#FEF3C7] to-[#FDE68A] border-2 border-[#D97706] ring-1 ring-[#D97706]/50 shadow-xs scale-102'
-                    : 'bg-[#F5EFE6] border border-[#D8C7B0] opacity-70'"
-                >
-                  <!-- Hit status badge -->
-                  <div
-                    v-if="isYiWuJiuMa(tile)"
-                    class="bg-gradient-to-r from-[#DC2626] to-[#EA580C] text-white font-black text-[8px] sm:text-[9px] px-1 py-0.1 rounded-full shadow-xs border border-[#FDE68A] animate-pulse whitespace-nowrap mb-0.5"
-                  >
-                    🔥 +10
-                  </div>
-                  <div
-                    v-else
-                    class="text-[7px] sm:text-[8px] text-[#78695C] font-bold px-0.5 rounded bg-[#E5D7C2] border border-[#D8C7B0] whitespace-nowrap mb-0.5"
-                  >
-                    未中
-                  </div>
-
-                  <!-- Tile Image Container -->
-                  <div class="h-[34px] sm:h-[40px] w-[24px] sm:w-[28px] rounded bg-gradient-to-b from-[#FFFDF8] via-[#FAF4E8] to-[#EFE2C8] border border-[#C89B3C] flex items-center justify-center p-0.5 shadow-2xs">
-                    <img
-                      :src="getMahjongImagePath(tile)"
-                      :alt="tile.text"
-                      class="w-full h-full object-contain drop-shadow-2xs pointer-events-none"
-                    />
-                  </div>
-
-                  <!-- Tile Label Text (清晰中文牌名) -->
-                  <span
-                    class="text-[9px] sm:text-[10px] font-bold mt-0.5 font-mono leading-none"
-                    :class="isYiWuJiuMa(tile) ? 'text-[#92400E] font-black' : 'text-[#78695C]'"
-                  >
-                    {{ tile.text }}
-                  </span>
-                </div>
-              </template>
-            </div>
-          </div>
-
-          <!-- 4. Formula & 4-Player Settlement Row (四方结算明细与公式，横向并排紧凑不占高度) -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-1.5 shrink-0">
-            <!-- Left: Formula Breakdown & Fans Chips -->
-            <div class="bg-[#FAF4E8]/95 rounded-lg px-2 py-1 border border-[#D8C7B0] shadow-xs flex flex-col justify-between gap-1">
-              <div class="flex items-center gap-1 text-[11px] sm:text-xs font-mono text-[#5C4533] leading-tight">
-                <span class="text-[#78350F] font-bold">📐 计分：</span>
-                <span>
-                  底分 10 + 中码 {{ winningBreakdown.hitMaCount }}×10
-                  <template v-if="winningBreakdown.kongBonusTotal && winningBreakdown.kongBonusTotal > 0">
-                    <strong class="text-[#D97706] font-bold"> + 杠分 ({{ winningBreakdown.kongBonusTotal }})</strong>
-                  </template>
-                  = <strong class="text-[#8B2516] font-bold">{{ winningBreakdown.payoutPerOpponent }}分/家</strong>
-                </span>
-              </div>
-              <div class="flex items-center gap-1 flex-wrap">
-                <span class="text-[10px] font-bold text-[#78695C]">明细:</span>
-                <span
-                  v-for="(fan, fIdx) in winningBreakdown.fans"
-                  :key="`fan-${fIdx}`"
-                  class="px-1.5 py-0.2 rounded bg-[#EFE5D3] text-[#78350F] border border-[#C89B3C]/40 text-[10px] sm:text-[11px] font-medium leading-none"
-                >
-                  {{ fan }}
-                </span>
-              </div>
-            </div>
-
-            <!-- Right: 4-Seat Settlement Overview -->
-            <div class="bg-[#FAF4E8]/95 rounded-lg px-2 py-1 border border-[#D8C7B0] shadow-xs flex flex-col justify-between gap-1">
-              <div class="text-[11px] sm:text-xs font-bold text-[#78350F] font-serif-title flex items-center justify-between leading-tight">
-                <span>四席筹码结算收支</span>
-                <span class="text-[10px] text-[#78695C] font-mono font-normal">实时核算</span>
-              </div>
-              <div class="grid grid-cols-4 gap-1 text-center">
-                <!-- Seat 0: You -->
-                <div
-                  class="rounded p-0.5 sm:p-1 border"
-                  :class="winningBreakdown.rewardCoins >= 0
-                    ? 'border-[#34A853]/60 bg-[#E6F4EA]/60 text-[#137333]'
-                    : 'border-[#EA4335]/40 bg-[#FCE8E6]/60 text-[#C5221F]'"
-                >
-                  <div class="text-[9px] sm:text-[10px] text-[#5C4533] font-medium leading-none">本席</div>
-                  <div
-                    class="text-[10px] sm:text-xs font-bold font-mono tabular-nums mt-0.5 leading-none"
-                    :class="winningBreakdown.rewardCoins >= 0 ? 'text-[#137333]' : 'text-[#C5221F]'"
-                  >
-                    {{ winningBreakdown.rewardCoins >= 0 ? `+${winningBreakdown.rewardCoins}` : winningBreakdown.rewardCoins }}
-                  </div>
-                </div>
-
-                <!-- Opponents 1, 2, 3 (East, North, West) -->
-                <template v-for="(oppSeat, oIdx) in [1, 2, 3]" :key="`seat-${oppSeat}`">
-                  <div
-                    class="rounded p-0.5 sm:p-1 border"
-                    :class="(winningBreakdown.netCoinsPerSeat ? winningBreakdown.netCoinsPerSeat[oppSeat] >= 0 : (winningBreakdown.winnerSeat === oppSeat))
-                      ? 'border-[#34A853]/60 bg-[#E6F4EA]/60 text-[#137333]'
-                      : 'border-[#D8C7B0] bg-[#FFFDF8] text-[#5C4533]'"
-                  >
-                    <div class="text-[9px] sm:text-[10px] text-[#6B5744] font-medium truncate leading-none">
-                      {{ ['东席', '北席', '西席'][oIdx] }}
-                    </div>
-                    <div
-                      class="text-[10px] sm:text-xs font-bold font-mono tabular-nums mt-0.5 leading-none"
-                      :class="(winningBreakdown.netCoinsPerSeat ? winningBreakdown.netCoinsPerSeat[oppSeat] >= 0 : (winningBreakdown.winnerSeat === oppSeat))
-                        ? 'text-[#137333]'
-                        : 'text-[#5C4533]'"
-                    >
-                      <template v-if="winningBreakdown.netCoinsPerSeat">
-                        {{ winningBreakdown.netCoinsPerSeat[oppSeat] >= 0 ? `+${winningBreakdown.netCoinsPerSeat[oppSeat]}` : winningBreakdown.netCoinsPerSeat[oppSeat] }}
-                      </template>
-                      <template v-else>
-                        {{ winningBreakdown.winnerSeat === oppSeat ? `+${winningBreakdown.payoutPerOpponent * 3}` : `-${winningBreakdown.payoutPerOpponent}` }}
-                      </template>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </div>
-
-          <!-- 5. Action Buttons (底部操作，紧凑高度，双按钮分明) -->
-          <div class="flex items-center justify-between gap-2 pt-1 border-t border-[#D8C7B0] shrink-0">
-            <button
-              type="button"
-              @click="handleLeaveToLobby"
-              class="px-3.5 sm:px-4 py-1.5 rounded-lg bg-[#E5D7C2] hover:bg-[#D8C7B0] text-[#3C2C1E] border border-[#C89B3C]/60 text-xs sm:text-sm font-bold shadow-xs transition-all active:scale-95 cursor-pointer flex items-center gap-1"
-            >
-              <span>🚪</span>
-              <span>退出大厅</span>
-            </button>
-
-            <div class="flex items-center gap-2">
-              <span
-                v-if="!hasClickedReady && isOnlineMultiplayerRoom"
-                class="text-[11px] sm:text-xs font-bold text-[#78350F] bg-[#FAF4E8] px-2 py-1 rounded-md border border-[#D8C7B0]"
-              >
-                已有 {{ readyPlayersCount }}/4 人继续
-              </span>
-              <button
-                type="button"
-                @click="onRestartGame"
-                :disabled="hasClickedReady"
-                class="px-5 sm:px-8 py-1.5 sm:py-2 text-xs sm:text-sm md:text-base font-black rounded-lg shadow-md ring-1 transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
-                :class="hasClickedReady
-                  ? 'bg-[#137333] text-white ring-emerald-300 opacity-90'
-                  : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] text-white shadow-amber-700/30 ring-amber-300'"
-              >
-                <span>{{ hasClickedReady ? `✅ 已继续 · 已有 ${readyPlayersCount}/4 人继续游戏...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Stalemate Overlay (when wall runs out) -->
-      <div
-        v-if="isDrawStalemate"
-        class="absolute inset-0 z-40 flex items-center justify-center p-3 sm:p-4 select-none bg-black/75 backdrop-blur-md"
-      >
-        <div
-          class="w-full max-w-md rounded-2xl border-2 border-[#C89B3C] shadow-2xl p-5 text-center flex flex-col items-center gap-3 text-[#3C2C1E]"
-          :style="{
-            backgroundColor: '#EFE5D3',
-            backgroundImage: `radial-gradient(ellipse at 50% 30%, #FAF4E8 0%, #EFE5D3 65%, #E5D7C2 100%), url(&quot;data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.035'/%3E%3C/svg%3E&quot;)`
-          }"
-        >
-          <div class="text-4xl filter drop-shadow-xs">🀄 🌪️</div>
-          <div>
-            <h3 class="text-lg sm:text-xl font-black text-[#8B2516] font-serif-title">
-              荒牌流局
-            </h3>
-            <p class="text-xs sm:text-sm text-[#5C4533] mt-1 font-medium">
-              {{ tipMessage || '牌墙已摸空，无人自摸，本局平手！' }}
-            </p>
-          </div>
-          <div class="flex items-center gap-3 w-full mt-2 justify-center">
-            <button
-              type="button"
-              @click="handleLeaveToLobby"
-              class="px-4 py-2 bg-[#E5D7C2] hover:bg-[#D8C7B0] text-[#3C2C1E] text-xs sm:text-sm font-bold rounded-xl border border-[#C89B3C]/60 shadow-xs transition-all active:scale-95 cursor-pointer"
-            >
-              退出大厅 🚪
-            </button>
-            <button
-              type="button"
-              @click="onRestartGame"
-              :disabled="hasClickedReady"
-              class="px-6 py-2 text-xs sm:text-sm font-black rounded-xl shadow-md ring-1 active:scale-95 cursor-pointer text-white"
-              :class="hasClickedReady ? 'bg-[#137333] ring-emerald-300 opacity-90' : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] ring-amber-300'"
-            >
-              {{ hasClickedReady ? `✅ 已继续 · 已有 ${readyPlayersCount}/4 人继续游戏...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}
-            </button>
-          </div>
-        </div>
-      </div>
+      <MahjongSettlementModal
+        :has-won="hasWon"
+        :is-draw-stalemate="isDrawStalemate"
+        :winning-breakdown="winningBreakdown"
+        :settled-winner-label="settledWinnerLabel"
+        :settled-winning-melds="settledWinningMelds"
+        :settled-winning-hand="settledWinningHand"
+        :stalemate-net-coins="stalemateNetCoins"
+        :tip-message="tipMessage"
+        :has-clicked-ready="hasClickedReady"
+        :is-online-multiplayer-room="isOnlineMultiplayerRoom"
+        :ready-players-count="readyPlayersCount"
+        :settlement-countdown="settlementCountdown"
+        @leave="handleLeaveToLobby"
+        @restart="onRestartGame"
+      />
     </div>
   </div>
 </template>
@@ -518,23 +210,26 @@ import { haptics } from '../../utils/haptics';
 import { TableTheme } from '../../utils/theme';
 import { getCanvasEventCoords } from '../../utils/canvasCoords';
 import {
-  renderMahjongTile,
-  renderMahjongTileBack,
   preloadMahjongAssets,
   onMahjongAssetsLoaded,
-  getMahjongImagePath,
 } from '../../utils/mahjongAssets';
 import MahjongDiceCup from '../effects/MahjongDiceCup.vue';
-
-interface MahjongTile {
-  id: string;
-  type: 'wan' | 'tiao' | 'tong' | 'zi';
-  value: number; // 1..9 (zi: 1..7 for 东南西北中发白)
-  text: string;
-  color: string;
-  discardBy?: number; // 0=Player(South), 1=East(Right/Green), 2=North(Top/Blue), 3=West(Left/Red)
-  hidden?: boolean;
-}
+import MahjongSettlementModal from './mahjong/MahjongSettlementModal.vue';
+import { renderMahjongTableFrame } from './mahjong/mahjongRenderer';
+import {
+  type MahjongTile,
+  type WinningBreakdown,
+  isHongzhong,
+  isYiWuJiuMaTile,
+  sortMahjongHand as sortHand,
+  createMahjongTilePool as createTilePool,
+  normalizeServerMelds,
+  checkMahjongWinLocal as checkMahjongWin,
+  checkHongzhongWinLocal as checkHongzhongWin,
+  shouldSmartPengHand,
+  scoreMahjongHand,
+  findSmartBestDiscardIdx,
+} from '../../games/mahjong/aiWinEngine';
 
 const props = defineProps<{
   tableTheme?: TableTheme;
@@ -561,24 +256,14 @@ const mySeat = computed(() => {
   const myName = props.currentUser?.name;
 
   if (myId) {
-    const matched = props.roomPlayers.find((p: any) => {
-      if (!p) return false;
-      if (p.id === myId || p.originalId === myId) return true;
-      if (typeof p.id === 'string' && (p.id.startsWith(myId) || (typeof myId === 'string' && myId.startsWith(p.id)))) return true;
-      return false;
-    });
+    const matched = props.roomPlayers.find((p: any) => p && (p.id === myId || p.originalId === myId));
     if (matched && typeof matched.seat === 'number') return matched.seat;
     const idx = props.roomPlayers.findIndex((p: any) => p && (p.id === myId || p.originalId === myId));
     if (idx !== -1) return idx;
   }
 
   if (myName) {
-    const matched = props.roomPlayers.find((p: any) => {
-      if (!p) return false;
-      if (p.name === myName || (p as any).originalName === myName) return true;
-      if (typeof p.name === 'string' && (p.name.startsWith(myName) || (typeof myName === 'string' && myName.startsWith(p.name)))) return true;
-      return false;
-    });
+    const matched = props.roomPlayers.find((p: any) => p && (p.name === myName || (p as any).originalName === myName));
     if (matched && typeof matched.seat === 'number') return matched.seat;
     const idx = props.roomPlayers.findIndex((p: any) => p && p.name === myName);
     if (idx !== -1) return idx;
@@ -1102,70 +787,7 @@ function handlePassClaim() {
 }
 
 function shouldSmartPeng(hand: MahjongTile[], tile: MahjongTile): boolean {
-  if (!tile) return false;
-  if (isHongzhongMode.value && isHongzhong(tile)) return false;
-
-  const matches = hand.filter(c => c.type === tile.type && c.value === tile.value);
-  if (matches.length < 2) return false;
-
-  // 1. 七对子保护：若当前手牌已有 4 对及以上，严禁碰牌（碰牌亮副后无法成七对）
-  const counts = new Map<string, number>();
-  hand.forEach(c => {
-    if (isHongzhongMode.value && isHongzhong(c)) return;
-    counts.set(`${c.type}-${c.value}`, (counts.get(`${c.type}-${c.value}`) || 0) + 1);
-  });
-  let pairCount = 0;
-  for (const cnt of counts.values()) {
-    if (cnt >= 2) pairCount++;
-  }
-  if (pairCount >= 4) {
-    return false;
-  }
-
-  // 2. 字牌对子（东南西北发白）：碰牌成刻收益极大且绝不影响顺子搭子，果断碰！
-  if (tile.type === 'zi') {
-    return true;
-  }
-
-  // 3. 模拟碰牌后手牌，如果碰牌后能听牌或保留顺子，则碰；若破坏顺子且远离听牌，则不碰
-  const remainingHand = [...hand];
-  let removed = 0;
-  for (let i = remainingHand.length - 1; i >= 0 && removed < 2; i--) {
-    if (remainingHand[i].type === tile.type && remainingHand[i].value === tile.value) {
-      remainingHand.splice(i, 1);
-      removed++;
-    }
-  }
-
-  const suitTiles = hand.filter(c => c.type === tile.type).map(c => c.value);
-  const v = tile.value;
-  const isEmbeddedInSequence =
-    (suitTiles.includes(v - 1) && suitTiles.includes(v + 1)) ||
-    (suitTiles.includes(v - 2) && suitTiles.includes(v - 1)) ||
-    (suitTiles.includes(v + 1) && suitTiles.includes(v + 2));
-
-  let canTingAfterPeng = false;
-  for (let i = 0; i < remainingHand.length; i++) {
-    const test13 = remainingHand.filter((_, idx) => idx !== i);
-    for (const kind of ALL_TILE_KINDS) {
-      const test14 = [...test13, { id: 'test-ting', type: kind.type, value: kind.value, text: kind.text }];
-      if (isHongzhongMode.value ? checkHongzhongWin(test14) : checkMahjongWin(test14)) {
-        canTingAfterPeng = true;
-        break;
-      }
-    }
-    if (canTingAfterPeng) break;
-  }
-
-  // 若碰牌后直接能叫听，果断碰牌！
-  if (canTingAfterPeng) return true;
-
-  // 若该对子深嵌在顺子搭子中且不能听牌，放弃碰牌，保持门前清摸牌
-  if (isEmbeddedInSequence && matches.length === 2) {
-    return false;
-  }
-
-  return true;
+  return shouldSmartPengHand(hand, tile, isHongzhongMode.value);
 }
 
 function waitForPlayerClaim(next: () => void) {
@@ -1241,297 +863,26 @@ function waitForPlayerClaim(next: () => void) {
   }
 }
 
-const TILE_CHARS: Record<string, string[]> = {
-  wan: ['一万', '二万', '三万', '四万', '五万', '六万', '七万', '八万', '九万'],
-  tiao: ['一条', '二条', '三条', '四条', '五条', '六条', '七条', '八条', '九条'],
-  tong: ['一筒', '二筒', '三筒', '四筒', '五筒', '六筒', '七筒', '八筒', '九筒'],
-  zi: ['东风', '南风', '西风', '北风', '红中', '发财', '白板'],
-};
-
-const ALL_TILE_KINDS = [
-  ...Array.from({length: 9}, (_, i) => ({ type: 'wan' as const, value: i + 1, text: TILE_CHARS.wan[i] })),
-  ...Array.from({length: 9}, (_, i) => ({ type: 'tiao' as const, value: i + 1, text: TILE_CHARS.tiao[i] })),
-  ...Array.from({length: 9}, (_, i) => ({ type: 'tong' as const, value: i + 1, text: TILE_CHARS.tong[i] })),
-  ...Array.from({length: 7}, (_, i) => ({ type: 'zi' as const, value: i + 1, text: TILE_CHARS.zi[i] })),
-];
-
 function scoreHand(tiles: MahjongTile[], evaluateTing: boolean = false): number {
-  if (!tiles || tiles.length === 0) return 0;
-
-  // 1. 直接胡牌判断
-  const isWin = isHongzhongMode.value ? checkHongzhongWin(tiles) : checkMahjongWin(tiles);
-  if (isWin) return 100000;
-
-  const groups: Record<string, number[]> = { wan: [], tiao: [], tong: [], zi: [] };
-  tiles.forEach(t => groups[t.type].push(t.value));
-
-  let totalScore = 0;
-
-  // 红中鬼牌保护
-  if (isHongzhongMode.value) {
-    const hzCount = tiles.filter(isHongzhong).length;
-    totalScore += hzCount * 2500;
-  }
-
-  for (const type in groups) {
-    const vals = groups[type];
-    if (vals.length === 0) continue;
-
-    const counts: number[] = new Array(10).fill(0);
-    vals.forEach(v => { if (v >= 1 && v <= 9) counts[v]++; });
-
-    if (type === 'zi') {
-      for (let v = 1; v <= 7; v++) {
-        const c = counts[v];
-        if (isHongzhongMode.value && v === 5) continue;
-        if (c >= 3) totalScore += 600;
-        else if (c === 2) totalScore += 250;
-        else if (c === 1) totalScore -= 300;
-      }
-    } else {
-      // 快速线性评估面子与搭子 (无需多重递归，O(1)瞬时完成)
-      const cMap = [...counts];
-      // 刻子检查
-      for (let v = 1; v <= 9; v++) {
-        if (cMap[v] >= 3) {
-          totalScore += 700;
-          cMap[v] -= 3;
-        }
-      }
-      // 顺子检查
-      for (let v = 1; v <= 7; v++) {
-        while (cMap[v] > 0 && cMap[v + 1] > 0 && cMap[v + 2] > 0) {
-          totalScore += 650;
-          cMap[v]--;
-          cMap[v + 1]--;
-          cMap[v + 2]--;
-        }
-      }
-      // 对子检查
-      for (let v = 1; v <= 9; v++) {
-        if (cMap[v] >= 2) {
-          totalScore += 300;
-          cMap[v] -= 2;
-        }
-      }
-      // 两面/搭子检查
-      for (let v = 1; v <= 8; v++) {
-        if (cMap[v] > 0 && cMap[v + 1] > 0) {
-          totalScore += 220;
-          cMap[v]--;
-          cMap[v + 1]--;
-        }
-      }
-      // 嵌张搭子检查
-      for (let v = 1; v <= 7; v++) {
-        if (cMap[v] > 0 && cMap[v + 2] > 0) {
-          totalScore += 140;
-          cMap[v]--;
-          cMap[v + 2]--;
-        }
-      }
-      // 孤张扣分
-      for (let v = 1; v <= 9; v++) {
-        if (cMap[v] > 0) {
-          if (v === 1 || v === 9) totalScore -= 180;
-          else totalScore -= 80;
-        }
-      }
-    }
-  }
-
-  // 2. 听牌评估仅在需要时按需计算，杜绝嵌套递归
-  if (evaluateTing) {
-    let tingKindsCount = 0;
-    let totalTingTilesAvailable = 0;
-
-    for (const kind of ALL_TILE_KINDS) {
-      const test14 = [...tiles, { id: 'test-ting', type: kind.type, value: kind.value, text: kind.text }];
-      const canWin = isHongzhongMode.value ? checkHongzhongWin(test14) : checkMahjongWin(test14);
-      if (canWin) {
-        tingKindsCount++;
-        const kindKey = `${kind.type}-${kind.value}`;
-        const used = (discards.value.filter(d => `${d.type}-${d.value}` === kindKey).length) +
-                     (meldedTiles.value.flatMap(m => m).filter(t => `${t.type}-${t.value}` === kindKey).length) +
-                     (tiles.filter(t => `${t.type}-${t.value}` === kindKey).length);
-        totalTingTilesAvailable += Math.max(0, 4 - used);
-      }
-    }
-
-    if (tingKindsCount > 0) {
-      totalScore += 20000 + tingKindsCount * 1500 + totalTingTilesAvailable * 200;
-    }
-  }
-
-  return totalScore;
+  return scoreMahjongHand(
+    tiles,
+    {
+      hongzhongMode: isHongzhongMode.value,
+      discards: discards.value,
+      meldedTiles: meldedTiles.value,
+    },
+    evaluateTing
+  );
 }
 
 function findSmartBestDiscard(hand: MahjongTile[]): number {
-  if (hand.length <= 1) return 0;
-
-  // 在红中模式下，如果手牌有非红中牌，绝不可打出红中鬼牌
-  const nonHzIndices = hand
-    .map((t, idx) => ({ t, idx }))
-    .filter((item) => !(isHongzhongMode.value && isHongzhong(item.t)));
-  const candidateIndices = nonHzIndices.length > 0 ? nonHzIndices.map((item) => item.idx) : hand.map((_, idx) => idx);
-
-  // 牌种去重：相同种类的牌评估单张即可，杜绝多张重复无用开销
-  const uniqueCandidateIndices: number[] = [];
-  const seenKinds = new Set<string>();
-  for (const idx of candidateIndices) {
-    const t = hand[idx];
-    const key = `${t.type}-${t.value}`;
-    if (!seenKinds.has(key)) {
-      seenKinds.add(key);
-      uniqueCandidateIndices.push(idx);
-    }
-  }
-  const evalIndices = uniqueCandidateIndices.length > 0 ? uniqueCandidateIndices : candidateIndices;
-
-  let bestIndex = evalIndices[0];
-  let maxTotalScore = -999999999;
-
-  // 汇总桌面已见牌（牌池 + 各家副露副牌）
-  const visibleCounts: Record<string, number> = {};
-  discards.value.forEach((t) => {
-    const key = `${t.type}-${t.value}`;
-    visibleCounts[key] = (visibleCounts[key] || 0) + 1;
+  return findSmartBestDiscardIdx(hand, {
+    hongzhongMode: isHongzhongMode.value,
+    discards: discards.value,
+    meldedTiles: meldedTiles.value,
+    oppMelds: oppMelds.value,
+    wallCount: wallCount.value,
   });
-  meldedTiles.value.forEach((meld) => {
-    meld.forEach((t) => {
-      const key = `${t.type}-${t.value}`;
-      visibleCounts[key] = (visibleCounts[key] || 0) + 1;
-    });
-  });
-  oppMelds.value.forEach((playerMelds) => {
-    playerMelds.forEach((meld) => {
-      meld.forEach((t) => {
-        const key = `${t.type}-${t.value}`;
-        visibleCounts[key] = (visibleCounts[key] || 0) + 1;
-      });
-    });
-  });
-
-  // 七对子倾向性检测 (手牌已有4对及以上时，力保对子，单张全部优先舍出)
-  const counts = new Map<string, number>();
-  hand.forEach((c) => {
-    if (isHongzhongMode.value && isHongzhong(c)) return;
-    counts.set(`${c.type}-${c.value}`, (counts.get(`${c.type}-${c.value}`) || 0) + 1);
-  });
-  let totalPairsInHand = 0;
-  for (const cnt of counts.values()) {
-    if (cnt >= 2) totalPairsInHand++;
-  }
-  const isPursuingSevenPairs = totalPairsInHand >= 4;
-
-  for (const i of evalIndices) {
-    const tile = hand[i];
-    const hand13 = hand.filter((_, idx) => idx !== i);
-    const base13Score = scoreHand(hand13, false);
-
-    let effectiveScoreSum = 0;
-    let tingDoors = 0;
-    let tingWinningTilesCount = 0;
-
-    for (const kind of ALL_TILE_KINDS) {
-      const kindKey = `${kind.type}-${kind.value}`;
-      const usedCount = visibleCounts[kindKey] || 0;
-      const inHand13Count = hand13.filter((t) => t.type === kind.type && t.value === kind.value).length;
-      const availableInWall = Math.max(0, 4 - usedCount - inHand13Count);
-
-      if (availableInWall === 0) continue;
-
-      const testHand14 = [...hand13, { id: 'test', type: kind.type, value: kind.value, text: kind.text }];
-      const canWin = isHongzhongMode.value ? checkHongzhongWin(testHand14) : checkMahjongWin(testHand14);
-
-      if (canWin) {
-        tingDoors++;
-        tingWinningTilesCount += availableInWall;
-      } else {
-        // 高性能进张潜力评估：与手牌搭接的有效进张张数
-        const connects = hand13.some(
-          (t) => t.type === kind.type && (t.value === kind.value || (t.type !== 'zi' && Math.abs(t.value - kind.value) <= 2))
-        );
-        if (connects) {
-          effectiveScoreSum += 120 * availableInWall;
-        }
-      }
-    }
-
-    // 核心听牌加分：打掉该牌能直接叫听（进张即胡牌），赋予压倒性最高优先级！
-    // 听牌门数越多（多门听牌）且牌墙剩余胡牌张数越多，权重越高
-    let tingBonus = 0;
-    if (tingDoors > 0) {
-      tingBonus = 35000 + tingDoors * 5000 + tingWinningTilesCount * 800;
-    }
-
-    // 孤张与废牌舍牌优先级 (discardUrgencyBonus)
-    let discardUrgencyBonus = 0;
-    const sameTileCountInHand = hand.filter((t) => t.type === tile.type && t.value === tile.value).length;
-    const sameTileVisible = visibleCounts[`${tile.type}-${tile.value}`] || 0;
-
-    // 七对子策略：严密保护对子，优先淘汰单牌
-    if (isPursuingSevenPairs) {
-      if (sameTileCountInHand >= 2) {
-        discardUrgencyBonus -= 30000;
-      } else {
-        discardUrgencyBonus += 4500;
-      }
-    }
-
-    if (tile.type === 'zi') {
-      if (sameTileCountInHand === 1) {
-        if (sameTileVisible >= 2) {
-          discardUrgencyBonus += 2400; // 绝张字牌（外面已见2~3张），第一优先舍弃
-        } else {
-          discardUrgencyBonus += 1300; // 孤张字牌
-        }
-      } else if (sameTileCountInHand === 2) {
-        discardUrgencyBonus -= 800; // 字牌对子保留当雀头或等碰
-      }
-    } else {
-      // 数牌 (万条筒)
-      if (sameTileCountInHand === 1) {
-        if (tile.value === 1 || tile.value === 9) {
-          const hasAdjacent = hand.some((t) => t.type === tile.type && Math.abs(t.value - tile.value) === 1);
-          if (!hasAdjacent) {
-            discardUrgencyBonus += 700; // 孤张 1, 9 幺九牌
-          }
-        } else if (tile.value === 2 || tile.value === 8) {
-          const hasNeighbor = hand.some((t) => t.type === tile.type && Math.abs(t.value - tile.value) <= 1 && t !== tile);
-          if (!hasNeighbor) {
-            discardUrgencyBonus += 380; // 孤张 2, 8
-          }
-        } else {
-          const hasCloseNeighbor = hand.some((t) => t.type === tile.type && Math.abs(t.value - tile.value) <= 2 && t !== tile);
-          if (!hasCloseNeighbor) {
-            discardUrgencyBonus += 220; // 完全无靠的中心牌
-          }
-        }
-      }
-    }
-
-    // 防守：巡目较深（牌墙剩余 < 30 或总弃牌数 > 40）时，优先打现物安全牌
-    let defenseBonus = 0;
-    if (wallCount.value < 30) {
-      const isAlreadyInDiscards = discards.value.some((d) => d.type === tile.type && d.value === tile.value);
-      if (isAlreadyInDiscards) {
-        defenseBonus += 700; // 现物绝对安全
-      } else if (tile.type !== 'zi' && tile.value >= 4 && tile.value <= 6) {
-        defenseBonus -= 450; // 后期危险中张慎打
-      }
-    }
-
-    // 综合评分：打掉该牌后【剩余手牌基础分 + 进张总潜力 + 听牌巨大加成 + 孤张出牌合理度 + 防守分】
-    const totalEvaluation = base13Score + effectiveScoreSum + tingBonus + discardUrgencyBonus + defenseBonus;
-
-    if (totalEvaluation > maxTotalScore) {
-      maxTotalScore = totalEvaluation;
-      bestIndex = i;
-    }
-  }
-
-  return bestIndex;
 }
 
 function checkAutoHostTurn() {
@@ -1576,28 +927,31 @@ function checkAutoHostTurn() {
 
 
 
-interface WinningBreakdown {
-  fans: string[];
-  totalFan: number;
-  rewardCoins: number;
-  maCount: number;
-  rewardMaTiles: MahjongTile[];
-  hitMaCount: number;
-  payoutPerOpponent: number;
-  isFourHongzhong?: boolean;
-  kongBonusTotal?: number;
-  opponentPayouts?: number[];
-  winnerSeat?: number;
-  netCoinsPerSeat?: number[];
-  winningHand?: MahjongTile[];
-  winningMelds?: MahjongTile[][];
-  winnerNameSnapshot?: string;
-}
+
 
 const playerKongExtra = ref<number[]>([0, 0, 0]); // [East, North, West] extra points owed by opponents due to player's Kongs
 // 全席位杠分净盈亏记账本 [0:玩家, 1:东席, 2:北席, 3:西席]
 const seatKongScores = ref<number[]>([0, 0, 0, 0]);
+const stalemateNetCoins = ref<number[]>([0, 0, 0, 0]);
 const kongRecords = ref<string[]>([]);
+
+function formatKongHistoryRecords(history: any[]): string[] {
+  if (!Array.isArray(history)) return [];
+  return history.map((entry: any) => {
+    const relGanger = typeof entry?.seat === 'number' ? absToRelSeat(entry.seat) : -1;
+    const gangerName = relGanger === 0 ? '您' : `【${SEAT_NAMES[relGanger] || '牌友'}】`;
+    if (entry?.gangType === 'ming' && typeof entry.fromSeat === 'number') {
+      const relVictim = absToRelSeat(entry.fromSeat);
+      const victimName = relVictim === 0 ? '您' : `【${SEAT_NAMES[relVictim] || '牌友'}】`;
+      if (relGanger === 0) return `您明杠${victimName} (+10分)`;
+      if (relVictim === 0) return `${gangerName}明杠您 (-10分)`;
+      return `${gangerName}明杠${victimName} (10分)`;
+    }
+    const label = entry?.gangType === 'an' ? '暗杠' : '补杠';
+    if (relGanger === 0) return `您${label}各得三家10分 (+30分)`;
+    return `${gangerName}${label}各家输10分 (-10分)`;
+  });
+}
 
 const winningBreakdown = ref<WinningBreakdown>({
   fans: ['自摸和牌 (基准 1番)', '常规平胡 (不计翻倍)'],
@@ -1647,56 +1001,11 @@ const baseMaCount = computed(() => {
   return (props.sceneMode === 'standard-10' || props.sceneMode === 'hongzhong-10') ? 10 : 6;
 });
 
-function isHongzhong(tile: MahjongTile | null | undefined): boolean {
-  if (!tile) return false;
-  return (tile.type === 'zi' && tile.value === 5) || tile.text === '红中';
-}
-
 function isYiWuJiuMa(t: MahjongTile): boolean {
-  if (winningBreakdown.value?.isFourHongzhong) return true;
-  if (t.type !== 'zi') {
-    return t.value === 1 || t.value === 5 || t.value === 9;
-  }
-  return t.value === 1 || t.value === 5 || t.text === '东风' || t.text === '红中';
-}
-
-
-function createTilePool(): MahjongTile[] {
-  const pool: MahjongTile[] = [];
-  (['wan', 'tiao', 'tong'] as const).forEach((t) => {
-    for (let v = 1; v <= 9; v++) {
-      for (let copy = 0; copy < 4; copy++) {
-        pool.push({
-          id: `${t}-${v}-${copy}`,
-          type: t,
-          value: v,
-          text: TILE_CHARS[t][v - 1],
-          color: t === 'wan' ? '#DC2626' : (t === 'tiao' ? '#16A34A' : '#2563EB'),
-        });
-      }
-    }
-  });
-  // Zi tiles
-  for (let v = 1; v <= 7; v++) {
-    for (let copy = 0; copy < 4; copy++) {
-      pool.push({
-        id: `zi-${v}-${copy}`,
-        type: 'zi',
-        value: v,
-        text: TILE_CHARS.zi[v - 1],
-        color: v === 5 ? '#DC2626' : (v === 6 ? '#16A34A' : '#475569'),
-      });
-    }
-  }
-  return pool.sort(() => Math.random() - 0.5);
+  return isYiWuJiuMaTile(t, Boolean(winningBreakdown.value?.isFourHongzhong));
 }
 
 let wallPool: MahjongTile[] = [];
-
-function sortHand(hand: MahjongTile[]): MahjongTile[] {
-  const typeOrder = { wan: 0, tiao: 1, tong: 2, zi: 3 };
-  return [...hand].sort((a, b) => typeOrder[a.type] - typeOrder[b.type] || a.value - b.value);
-}
 
 function handleLeaveToLobby() {
   stopSettlementCountdown();
@@ -1804,6 +1113,7 @@ function saveLocalSnapshotNow() {
       wallCount: wallCount.value,
       wallPool: wallPool,
       seatKongScores: seatKongScores.value,
+      stalemateNetCoins: stalemateNetCoins.value,
       playerKongExtra: playerKongExtra.value,
       kongRecords: kongRecords.value,
       isHongzhongMode: isHongzhongMode.value,
@@ -1869,6 +1179,7 @@ function tryRestoreLocalSnapshot(): boolean {
     wallCount.value = snap.wallCount ?? 83;
     if (Array.isArray(snap.wallPool)) wallPool = snap.wallPool;
     if (Array.isArray(snap.seatKongScores)) seatKongScores.value = snap.seatKongScores;
+    if (Array.isArray(snap.stalemateNetCoins)) stalemateNetCoins.value = snap.stalemateNetCoins;
     if (Array.isArray(snap.playerKongExtra)) playerKongExtra.value = snap.playerKongExtra;
     if (Array.isArray(snap.kongRecords)) kongRecords.value = snap.kongRecords;
 
@@ -2022,6 +1333,10 @@ function handleReconnectSync(msg: any) {
     }
     seatKongScores.value = mappedKong;
   }
+  const reconKongHist = bs?.extraState?.kongHistory || bs?.settlement?.kongHistory;
+  if (Array.isArray(reconKongHist)) {
+    kongRecords.value = formatKongHistoryRecords(reconKongHist);
+  }
 
   if (bs?.extraState?.pendingPengSeat !== undefined) {
     pendingPengTurn.value = bs.extraState.pendingPengSeat !== null
@@ -2071,6 +1386,9 @@ function handleReconnectSync(msg: any) {
 
   if (bs?.phase === 'ended' && bs?.isDraw) {
     if (isDrawStalemate.value) {
+      if (Array.isArray(bs?.settlement?.netCoinsPerSeat) && bs.settlement.netCoinsPerSeat.length === 4) {
+        stalemateNetCoins.value = [0, 1, 2, 3].map((relS) => bs.settlement.netCoinsPerSeat[relToAbsSeat(relS)] || 0);
+      }
       startSettlementCountdown(resolvedExpiresAt, msg.serverTs);
       saveLocalSnapshotNow();
       return;
@@ -2102,6 +1420,12 @@ function handleReconnectSync(msg: any) {
         if (relWinner === 0) meldedTiles.value = normAuthMelds;
         else oppMelds.value[relWinner - 1] = normAuthMelds;
       }
+      if (Array.isArray(stlObj.netCoinsPerSeat) && stlObj.netCoinsPerSeat.length === 4) {
+        const syncedNet = [0, 1, 2, 3].map((relS) => stlObj.netCoinsPerSeat[relToAbsSeat(relS)] || 0);
+        winningBreakdown.value.netCoinsPerSeat = syncedNet;
+        winningBreakdown.value.rewardCoins = syncedNet[0];
+      }
+      winningBreakdown.value.winnerSeat = relWinner;
       winningBreakdown.value.winnerNameSnapshot = SEAT_NAMES[relWinner];
       startSettlementCountdown(resolvedExpiresAt, msg.serverTs);
       saveLocalSnapshotNow();
@@ -2228,6 +1552,7 @@ function dealNewMatch(designatedDealer?: number, forceReApply = false, dealOverr
 
   playerKongExtra.value = [0, 0, 0];
   seatKongScores.value = [0, 0, 0, 0];
+  stalemateNetCoins.value = [0, 0, 0, 0];
   kongRecords.value = [];
   meldedTiles.value = [];
   oppMelds.value = [[], [], []];
@@ -2521,273 +1846,7 @@ const canGang = computed(() => {
   return false;
 });
 
-/**
- * Standard Mahjong Win Check (4 melds + 1 pair, or 7 pairs)
- * 规则：无十三幺 (十三幺不作为胡牌牌型，严格禁止)
- */
-function checkMahjongWin(hand: MahjongTile[]): boolean {
-  if (hand.length % 3 !== 2) return false;
 
-  // Check 7 pairs (七对)
-  if (hand.length === 14) {
-    const counts = new Map<string, number>();
-    hand.forEach((c) => counts.set(`${c.type}-${c.value}`, (counts.get(`${c.type}-${c.value}`) || 0) + 1));
-    let pairCount = 0;
-    for (const cnt of counts.values()) {
-      if (cnt === 2) pairCount++;
-      if (cnt === 4) pairCount += 2;
-    }
-    if (pairCount === 7) return true;
-  }
-
-  // Group by type (wan, tiao, tong, zi)
-  const groups: Record<string, number[]> = { wan: [], tiao: [], tong: [], zi: [] };
-  hand.forEach((c) => groups[c.type].push(c.value));
-  Object.values(groups).forEach((arr) => arr.sort((a, b) => a - b));
-
-  // Try each possible pair (雀头)
-  for (const [t, vals] of Object.entries(groups)) {
-    for (let i = 0; i < vals.length - 1; i++) {
-      if (vals[i] === vals[i + 1]) {
-        // Remove this pair and check if remaining are all valid melds (3-sets)
-        const testGroups: Record<string, number[]> = {
-          wan: [...groups.wan],
-          tiao: [...groups.tiao],
-          tong: [...groups.tong],
-          zi: [...groups.zi],
-        };
-        testGroups[t].splice(i, 2);
-
-        let allValid = true;
-        for (const [subT, subVals] of Object.entries(testGroups)) {
-          if (!canDecomposeIntoMelds(subVals, subT === 'zi')) {
-            allValid = false;
-            break;
-          }
-        }
-        if (allValid) return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-function canDecomposeIntoMelds(vals: number[], isZi = false): boolean {
-  if (vals.length === 0) return true;
-  if (vals.length % 3 !== 0) return false;
-
-  const arr = [...vals].sort((a, b) => a - b);
-  // Try Triplet (刻子)
-  if (arr[0] === arr[1] && arr[1] === arr[2]) {
-    const nextArr = arr.slice(3);
-    if (canDecomposeIntoMelds(nextArr, isZi)) return true;
-  }
-  // Try Sequence (顺子 - 字牌不可成顺)
-  if (!isZi) {
-    const v = arr[0];
-    const idx2 = arr.indexOf(v + 1);
-    const idx3 = arr.indexOf(v + 2);
-    if (idx2 !== -1 && idx3 !== -1) {
-      const nextArr = [...arr];
-      nextArr.splice(idx3, 1);
-      nextArr.splice(idx2, 1);
-      nextArr.splice(0, 1);
-      if (canDecomposeIntoMelds(nextArr, isZi)) return true;
-    }
-  }
-  return false;
-}
-
-// 缓存单花色所需最小百搭癞子数量
-const suitWildcardCache = new Map<string, number>();
-
-function minWildcardsForSuit(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  if (suitWildcardCache.size > 5000) suitWildcardCache.clear();
-  const key = arr.join(',');
-  if (suitWildcardCache.has(key)) return suitWildcardCache.get(key)!;
-
-  const v = arr[0];
-  let minCost = 999;
-
-  // 1. 刻子相关组合
-  const countV = arr.filter((x) => x === v).length;
-  // 1a: 3张相同，0百搭
-  if (countV >= 3) {
-    const nextArr = [...arr];
-    nextArr.splice(nextArr.indexOf(v), 1);
-    nextArr.splice(nextArr.indexOf(v), 1);
-    nextArr.splice(nextArr.indexOf(v), 1);
-    minCost = Math.min(minCost, minWildcardsForSuit(nextArr));
-  }
-  // 1b: 2张相同 + 1百搭
-  if (countV >= 2) {
-    const nextArr = [...arr];
-    nextArr.splice(nextArr.indexOf(v), 1);
-    nextArr.splice(nextArr.indexOf(v), 1);
-    minCost = Math.min(minCost, 1 + minWildcardsForSuit(nextArr));
-  }
-  // 1c: 1张单牌 + 2百搭
-  {
-    const nextArr = [...arr];
-    nextArr.splice(nextArr.indexOf(v), 1);
-    minCost = Math.min(minCost, 2 + minWildcardsForSuit(nextArr));
-  }
-
-  // 2. 顺子相关组合
-  const idx1 = arr.indexOf(v + 1);
-  const idx2 = arr.indexOf(v + 2);
-
-  // 2a: v, v+1, v+2 (0百搭)
-  if (idx1 !== -1 && idx2 !== -1) {
-    const nextArr = [...arr];
-    nextArr.splice(idx2, 1);
-    nextArr.splice(idx1, 1);
-    nextArr.splice(0, 1);
-    minCost = Math.min(minCost, minWildcardsForSuit(nextArr));
-  }
-  // 2b: v, v+1 + 1百搭
-  if (idx1 !== -1) {
-    const nextArr = [...arr];
-    nextArr.splice(idx1, 1);
-    nextArr.splice(0, 1);
-    minCost = Math.min(minCost, 1 + minWildcardsForSuit(nextArr));
-  }
-  // 2c: v, v+2 + 1百搭
-  if (idx2 !== -1) {
-    const nextArr = [...arr];
-    nextArr.splice(idx2, 1);
-    nextArr.splice(0, 1);
-    minCost = Math.min(minCost, 1 + minWildcardsForSuit(nextArr));
-  }
-
-  suitWildcardCache.set(key, minCost);
-  return minCost;
-}
-
-function minWildcardsForZi(vals: number[]): number {
-  if (vals.length === 0) return 0;
-  const counts = new Map<number, number>();
-  vals.forEach((v) => counts.set(v, (counts.get(v) || 0) + 1));
-  let needed = 0;
-  for (const c of counts.values()) {
-    const rem = c % 3;
-    if (rem === 1) needed += 2;
-    else if (rem === 2) needed += 1;
-  }
-  return needed;
-}
-
-function totalWildcardsNeeded(w: number[], ti: number[], to: number[], z: number[]): number {
-  return minWildcardsForSuit(w) + minWildcardsForSuit(ti) + minWildcardsForSuit(to) + minWildcardsForZi(z);
-}
-
-/**
- * 红中麻将胡牌检测：红中作为万能百搭牌
- * - 四张红中：直接胡牌结束游戏
- * - 七对：红中可与任意单牌成对
- * - 标准 4副牌 + 1将牌 (雀头)：红中可任意充当
- */
-function checkHongzhongWin(hand: MahjongTile[]): boolean {
-  if (hand.length % 3 !== 2) return false;
-
-  const hzCount = hand.filter(isHongzhong).length;
-  // 规则：摸到四张红中就结束游戏！
-  if (hzCount === 4) return true;
-
-  const normalTiles = hand.filter((t) => !isHongzhong(t));
-
-  // 1. 七对检查 (七对必须全手牌14张且无亮副)
-  if (hand.length === 14) {
-    const counts = new Map<string, number>();
-    normalTiles.forEach((c) => counts.set(`${c.type}-${c.value}`, (counts.get(`${c.type}-${c.value}`) || 0) + 1));
-    let neededForSingles = 0;
-    for (const cnt of counts.values()) {
-      neededForSingles += cnt % 2;
-    }
-    if (hzCount >= neededForSingles) {
-      return true;
-    }
-  }
-
-  // 2. 正常 4副 + 1雀头 检查
-  const wan = normalTiles.filter((t) => t.type === 'wan').map((t) => t.value).sort((a, b) => a - b);
-  const tiao = normalTiles.filter((t) => t.type === 'tiao').map((t) => t.value).sort((a, b) => a - b);
-  const tong = normalTiles.filter((t) => t.type === 'tong').map((t) => t.value).sort((a, b) => a - b);
-  const zi = normalTiles.filter((t) => t.type === 'zi').map((t) => t.value).sort((a, b) => a - b);
-
-  // 方案 A: 雀头由 2张红中 组成
-  if (hzCount >= 2) {
-    if (totalWildcardsNeeded(wan, tiao, tong, zi) <= hzCount - 2) {
-      return true;
-    }
-  }
-
-  // 方案 B: 雀头由 1张普通牌 + 1张红中 组成
-  if (hzCount >= 1) {
-    // 遍历每一个可能的普通单牌作为将
-    const tried = new Set<string>();
-    for (const t of normalTiles) {
-      const key = `${t.type}-${t.value}`;
-      if (tried.has(key)) continue;
-      tried.add(key);
-
-      const testWan = [...wan];
-      const testTiao = [...tiao];
-      const testTong = [...tong];
-      const testZi = [...zi];
-
-      if (t.type === 'wan') testWan.splice(testWan.indexOf(t.value), 1);
-      else if (t.type === 'tiao') testTiao.splice(testTiao.indexOf(t.value), 1);
-      else if (t.type === 'tong') testTong.splice(testTong.indexOf(t.value), 1);
-      else if (t.type === 'zi') testZi.splice(testZi.indexOf(t.value), 1);
-
-      if (totalWildcardsNeeded(testWan, testTiao, testTong, testZi) <= hzCount - 1) {
-        return true;
-      }
-    }
-  }
-
-  // 方案 C: 雀头由 2张完全相同的普通牌 组成
-  const countsByKind = new Map<string, { type: 'wan' | 'tiao' | 'tong' | 'zi'; value: number; count: number }>();
-  normalTiles.forEach((t) => {
-    const key = `${t.type}-${t.value}`;
-    if (!countsByKind.has(key)) {
-      countsByKind.set(key, { type: t.type, value: t.value, count: 0 });
-    }
-    countsByKind.get(key)!.count++;
-  });
-
-  for (const item of countsByKind.values()) {
-    if (item.count >= 2) {
-      const testWan = [...wan];
-      const testTiao = [...tiao];
-      const testTong = [...tong];
-      const testZi = [...zi];
-
-      if (item.type === 'wan') {
-        testWan.splice(testWan.indexOf(item.value), 1);
-        testWan.splice(testWan.indexOf(item.value), 1);
-      } else if (item.type === 'tiao') {
-        testTiao.splice(testTiao.indexOf(item.value), 1);
-        testTiao.splice(testTiao.indexOf(item.value), 1);
-      } else if (item.type === 'tong') {
-        testTong.splice(testTong.indexOf(item.value), 1);
-        testTong.splice(testTong.indexOf(item.value), 1);
-      } else if (item.type === 'zi') {
-        testZi.splice(testZi.indexOf(item.value), 1);
-        testZi.splice(testZi.indexOf(item.value), 1);
-      }
-
-      if (totalWildcardsNeeded(testWan, testTiao, testTong, testZi) <= hzCount) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
 
 // 规则：不可炮胡，仅限自摸 (必须轮到自己回合且已抓牌在手，手牌数为 3k+2)
 const canHu = computed(() => {
@@ -2817,17 +1876,40 @@ function triggerDrawStalemate(message = '牌墙已摸空，荒牌流局！', fro
   wallCount.value = 0;
   isDrawStalemate.value = true;
   dealingPhase.value = 'settled';
-  const myKongNet =
-    (Array.isArray(payloadData?.netCoinsPerSeat) && typeof payloadData.netCoinsPerSeat[mySeat.value] === 'number'
-      ? payloadData.netCoinsPerSeat[mySeat.value]
-      : Array.isArray(payloadData?.seatKongScores) && typeof payloadData.seatKongScores[mySeat.value] === 'number'
-        ? payloadData.seatKongScores[mySeat.value]
-        : 0);
+
+  const relKongScores = [0, 1, 2, 3].map((relS) => {
+    const absS = relToAbsSeat(relS);
+    if (Array.isArray(payloadData?.netCoinsPerSeat) && typeof payloadData.netCoinsPerSeat[absS] === 'number') {
+      return payloadData.netCoinsPerSeat[absS];
+    }
+    if (Array.isArray(payloadData?.seatKongScores) && typeof payloadData.seatKongScores[absS] === 'number') {
+      return payloadData.seatKongScores[absS];
+    }
+    return seatKongScores.value[relS] || 0;
+  });
+  seatKongScores.value = [...relKongScores];
+  stalemateNetCoins.value = [...relKongScores];
+  if (Array.isArray(payloadData?.kongHistory)) {
+    kongRecords.value = formatKongHistoryRecords(payloadData.kongHistory);
+  }
+
+  const myKongNet = relKongScores[0] || 0;
   const kongNote = myKongNet !== 0 ? `（本局杠分 ${myKongNet > 0 ? `+${myKongNet}` : myKongNet} 筹码已结算）` : '';
   tipMessage.value = `${message}${kongNote}`;
+
+  emit('move', {
+    action: 'draw_stalemate',
+    seat: mySeat.value,
+    isRemote: Boolean(fromServerWs),
+    skipWs: true,
+    winner: -1,
+    rewardCoins: myKongNet,
+    detail: tipMessage.value,
+  });
+
   startSettlementCountdown(payloadData?.settlementExpiresAt, payloadData?.serverTs);
   saveLocalSnapshotNow();
-  emit('game-over', { gameType: 'mahjong', isDraw: true });
+  emit('game-over', { gameType: 'mahjong', isDraw: true, rewardCoins: myKongNet });
   if (!fromServerWs && isOnlineMultiplayerRoom.value) {
     sendGameMove('draw_stalemate', { absSeat: mySeat.value });
   }
@@ -2893,11 +1975,14 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
   const isHzMode = isHongzhongMode.value;
   const fourHzWin = isHzMode && (isFourHongzhong || hzCountInHand === 4 || Boolean(payloadData?.isFourHz));
 
-  // Sync authoritative kong scores if server sent them
+  // Sync authoritative kong scores & history if server sent them
   if (Array.isArray(payloadData?.seatKongScores) && payloadData.seatKongScores.length === 4) {
     for (let relS = 0; relS < 4; relS++) {
       seatKongScores.value[relS] = payloadData.seatKongScores[relToAbsSeat(relS)] || 0;
     }
+  }
+  if (Array.isArray(payloadData?.kongHistory)) {
+    kongRecords.value = formatKongHistoryRecords(payloadData.kongHistory);
   }
 
   // Ensure isYiWuJiuMa uses current round's fourHzWin rather than any stale previous-round flag
@@ -2995,21 +2080,25 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
 
   // 本席玩家 (seat 0) 实际总盈亏
   const rewardCoins = netCoinsPerSeat[0];
-  let kongBonusTotal = Math.max(0, seatKongScores.value[0]);
+  const myKongNet = seatKongScores.value[0] || 0;
+  const winnerKongNet = seatKongScores.value[winnerSeat] || 0;
+  const kongBonusTotal = Math.max(0, winnerKongNet);
   const opponentPayouts = [0, 0, 0];
   const oppNames = ['东席', '北席', '西席'];
 
   if (isPlayer) {
     for (let i = 0; i < 3; i++) {
       const oppSeat = i + 1;
-      const actualLoss = Math.max(0, -netCoinsPerSeat[oppSeat]);
-      opponentPayouts[i] = actualLoss;
-      if (seatKongScores.value[oppSeat] < 0) {
-        fansList.push(`杠牌加成 (${oppNames[i]}被杠多输${-seatKongScores.value[oppSeat]}分)`);
+      opponentPayouts[i] = Math.max(0, -netCoinsPerSeat[oppSeat]);
+      if (seatKongScores.value[oppSeat] !== 0) {
+        const kVal = seatKongScores.value[oppSeat];
+        fansList.push(`${oppNames[i]}杠分 (${kVal > 0 ? `+${kVal}` : kVal}分)`);
       }
     }
-    if (seatKongScores.value[0] > 0) {
-      fansList.push(`本席杠牌进账 (+${seatKongScores.value[0]}分)`);
+    if (myKongNet > 0) {
+      fansList.push(`本席杠牌进账 (+${myKongNet}分)`);
+    } else if (myKongNet < 0) {
+      fansList.push(`本席被杠扣除 (${myKongNet}分)`);
     }
   } else {
     for (let i = 0; i < 3; i++) {
@@ -3021,23 +2110,27 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
       }
     }
 
-    if (seatKongScores.value[0] > 0) {
+    if (myKongNet > 0) {
       for (const rec of kongRecords.value) {
         if (rec.includes('您')) {
           fansList.push(rec);
         }
       }
       const myGrossLoss = payoutPerOpponent;
-      const myNetLoss = -rewardCoins;
-      fansList.push(`自摸本输${myGrossLoss}分，冲抵杠分+${seatKongScores.value[0]}分，实输${myNetLoss}分`);
-    } else if (seatKongScores.value[0] < 0) {
-      fansList.push(`被杠扣除${-seatKongScores.value[0]}分，冲抵后实输${-rewardCoins}分`);
+      if (rewardCoins >= 0) {
+        fansList.push(`自摸输${myGrossLoss}分，杠牌进账+${myKongNet}分，净赢+${rewardCoins}分`);
+      } else {
+        fansList.push(`自摸输${myGrossLoss}分，冲抵杠分+${myKongNet}分，实输${-rewardCoins}分`);
+      }
+    } else if (myKongNet < 0) {
+      fansList.push(`被杠扣除${-myKongNet}分，合局实输${-rewardCoins}分`);
     }
 
     for (let i = 0; i < 3; i++) {
       const oppSeat = i + 1;
-      if (oppSeat !== winnerSeat && seatKongScores.value[oppSeat] < 0) {
-        fansList.push(`【${oppNames[i]}】被杠多输${-seatKongScores.value[oppSeat]}分 (实输${-netCoinsPerSeat[oppSeat]}分)`);
+      if (seatKongScores.value[oppSeat] !== 0) {
+        const kVal = seatKongScores.value[oppSeat];
+        fansList.push(`${oppNames[i]}杠分 (${kVal > 0 ? `+${kVal}` : kVal}分)`);
       }
     }
   }
@@ -3052,6 +2145,7 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
     payoutPerOpponent,
     isFourHongzhong: fourHzWin,
     kongBonusTotal,
+    myKongNet,
     opponentPayouts,
     winnerSeat,
     netCoinsPerSeat: [...netCoinsPerSeat],
@@ -3118,20 +2212,7 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
 
 let drawRafId: number | null = null;
 
-function normalizeServerMelds(rawMelds: any[]): MahjongTile[][] {
-  if (!Array.isArray(rawMelds)) return [];
-  return rawMelds
-    .map((m: any) => {
-      if (Array.isArray(m)) return m;
-      if (Array.isArray(m?.tiles) && m.tiles.length > 0) return m.tiles;
-      if (m && m.tile) {
-        const cnt = m.type === 'gang' ? 4 : 3;
-        return Array.from({ length: cnt }, (_, i) => ({ ...m.tile, id: `${m.tile.id}-m-${i}` }));
-      }
-      return [];
-    })
-    .filter((arr: MahjongTile[]) => arr.length > 0);
-}
+
 
 function syncOpponentsFromBoardState(bs: any) {
   if (!bs || !isOnlineMultiplayerRoom.value) return;
@@ -3212,677 +2293,30 @@ function drawTable() {
 function renderTableFrame() {
   const canvas = canvasRef.value;
   if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  const dpr = window.devicePixelRatio || 1;
-  const width = 680;
-  const height = 430;
-  const targetW = Math.round(width * dpr);
-  const targetH = Math.round(height * dpr);
-  if (canvas.width !== targetW || canvas.height !== targetH) {
-    canvas.width = targetW;
-    canvas.height = targetH;
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-
-  // Background Mahjong Table Felt with spotlight illumination
-  const highlight = props.tableTheme?.highlightColor || '#FFFFFF';
-  const felt = props.tableTheme?.feltColor || '#ECEFF1';
-  const edge = props.tableTheme?.edgeColor || '#CFD8DC';
-
-  const grad = ctx.createRadialGradient(width / 2, height / 2 - 20, 20, width / 2, height / 2, 430);
-  grad.addColorStop(0, highlight);
-  grad.addColorStop(0.35, felt);
-  grad.addColorStop(0.85, edge);
-  grad.addColorStop(1, edge);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
-
-  // Subtle luxury table felt inner rim (bright amethyst pinstripe border)
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.roundRect(0, 0, width, height, 0);
-  ctx.stroke();
-
-  // Subtle ambient table spotlight ellipse
-  const spotGrad = ctx.createRadialGradient(width / 2, height / 2 - 20, 0, width / 2, height / 2 - 20, 260);
-  spotGrad.addColorStop(0, 'rgba(255, 255, 255, 0.16)');
-  spotGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.06)');
-  spotGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
-  ctx.fillStyle = spotGrad;
-  ctx.fillRect(0, 0, width, height);
-  ctx.restore();
-
-  // Helper: Draw Oval Avatar for Mahjong Opponent Players
-  const drawOvalOpponentAvatar = (
-    cx: number,
-    cy: number,
-    rx: number,
-    ry: number,
-    avatarEmoji: string,
-    seatName: string,
-    count: number,
-    color: string,
-    isActive: boolean,
-    orientation: 'horizontal' | 'vertical',
-    isDealer = false,
-    countdownSec?: number,
-    isAuto = false,
-    isDisc = false
-  ) => {
-    ctx.save();
-
-    // Active breathing / glowing aura
-    if (isActive) {
-      ctx.shadowColor = '#EF4444';
-      ctx.shadowBlur = 14;
-    } else {
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
-      ctx.shadowBlur = 6;
-      ctx.shadowOffsetY = 2;
-    }
-
-    // Oval background matching the border color
-    const grad = ctx.createRadialGradient(cx, cy - ry * 0.25, 4, cx, cy, Math.max(rx, ry));
-    if (color === '#3B82F6') {
-      grad.addColorStop(0, isActive ? '#3B82F6' : '#2563EB');
-      grad.addColorStop(0.55, '#1D4ED8');
-      grad.addColorStop(1, '#172554');
-    } else if (color === '#EF4444') {
-      grad.addColorStop(0, isActive ? '#EF4444' : '#DC2626');
-      grad.addColorStop(0.55, '#B91C1C');
-      grad.addColorStop(1, '#450A0A');
-    } else if (color === '#10B981') {
-      grad.addColorStop(0, isActive ? '#10B981' : '#059669');
-      grad.addColorStop(0.55, '#047857');
-      grad.addColorStop(1, '#022C22');
-    } else if (color === '#F59E0B') {
-      grad.addColorStop(0, isActive ? '#F59E0B' : '#D97706');
-      grad.addColorStop(0.55, '#B45309');
-      grad.addColorStop(1, '#451A03');
-    } else {
-      grad.addColorStop(0, color);
-      grad.addColorStop(1, '#110C09');
-    }
-
-    ctx.fillStyle = grad;
-    ctx.strokeStyle = isActive ? '#EF4444' : color;
-    ctx.lineWidth = isActive ? 2.5 : 2;
-
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Reset shadow for crisp text
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-
-    // Inner subtle pinstripe rim
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, Math.max(1, rx - 3), Math.max(1, ry - 3), 0, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    const currentSec = countdownSec !== undefined ? countdownSec : (isClaiming.value ? claimCountdown.value : turnCountdown.value);
-    const isManagedOrDisc = isAuto || isDisc;
-    const finalAvatar = isDisc ? '🤖' : avatarEmoji;
-
-    if (orientation === 'horizontal') {
-      // Horizontal Oval (North / Seat 2 at top)
-      const avatarR = 14;
-      const avatarCx = cx - rx + avatarR + 6;
-      const avatarCy = cy;
-
-      // Circle avatar icon badge - Always show avatar emoji
-      ctx.fillStyle = isDisc ? '#374151' : 'rgba(0, 0, 0, 0.35)';
-      ctx.strokeStyle = isActive ? '#EF4444' : (isDisc ? '#F59E0B' : 'rgba(255, 255, 255, 0.4)');
-      ctx.lineWidth = isActive ? 1.5 : 1;
-      ctx.beginPath();
-      ctx.arc(avatarCx, avatarCy, avatarR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.font = '14px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(finalAvatar, avatarCx, avatarCy + 1);
-
-      // Name & Tile Count
-      const textX = cx + 10;
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(seatName, textX, cy - 6);
-
-      ctx.fillStyle = '#FEF08A';
-      ctx.font = 'bold 10px monospace';
-      ctx.fillText(`${count}张`, textX, cy + 7);
-
-      // Offline / Auto-managed Badge
-      if (isManagedOrDisc) {
-        const badgeLabel = isDisc ? '离线托管' : '⚡托管';
-        ctx.save();
-        ctx.fillStyle = isDisc ? '#DC2626' : '#D97706';
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 1;
-        const bW = 52;
-        const bH = 14;
-        const bX = cx - bW / 2;
-        const bY = cy + ry + 3;
-        ctx.beginPath();
-        ctx.roundRect(bX, bY, bW, bH, 7);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 9px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(badgeLabel, cx, bY + bH / 2 + 0.5);
-        ctx.restore();
-      }
-    } else {
-      // Vertical Oval (West, East, South)
-      const avatarR = 14;
-      const avatarCx = cx;
-      const avatarCy = cy - ry + avatarR + 6;
-
-      // Circle avatar icon badge - Always show avatar emoji
-      ctx.fillStyle = isDisc ? '#374151' : 'rgba(0, 0, 0, 0.35)';
-      ctx.strokeStyle = isActive ? '#EF4444' : (isDisc ? '#F59E0B' : 'rgba(255, 255, 255, 0.4)');
-      ctx.lineWidth = isActive ? 1.5 : 1;
-      ctx.beginPath();
-      ctx.arc(avatarCx, avatarCy, avatarR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.font = '13px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(finalAvatar, avatarCx, avatarCy + 1);
-
-      // Seat Name
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(seatName, cx, cy + 5);
-
-      // Count
-      ctx.fillStyle = '#FEF08A';
-      ctx.font = 'bold 10px monospace';
-      ctx.fillText(`${count}张`, cx, cy + 18);
-
-      // Offline / Auto-managed Badge
-      if (isManagedOrDisc) {
-        const badgeLabel = isDisc ? '离线托管' : '⚡托管';
-        ctx.save();
-        ctx.fillStyle = isDisc ? '#DC2626' : '#D97706';
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 1;
-        const bW = 46;
-        const bH = 14;
-        const bX = cx - bW / 2;
-        const bY = cy + ry + 4;
-        ctx.beginPath();
-        ctx.roundRect(bX, bY, bW, bH, 7);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 8.5px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(badgeLabel, cx, bY + bH / 2 + 0.5);
-        ctx.restore();
-      }
-    }
-
-    // Dealer Badge (庄家徽章)
-    if (isDealer) {
-      const badgeX = orientation === 'horizontal' ? cx + rx - 6 : cx + rx - 4;
-      const badgeY = orientation === 'horizontal' ? cy - ry + 4 : cy - ry + 4;
-      ctx.fillStyle = '#F59E0B';
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(badgeX, badgeY, 6.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 8px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('庄', badgeX, badgeY + 0.5);
-    }
-
-    ctx.restore();
-  };
-
-function getPlayerInfoByRelSeat(relSeat: number): { name: string; avatar: string } {
-  const defaultNames = ['玩家', '牌友 A', '牌友 B', '牌友 C'];
-  const defaultEmojis = ['👑', '🧑', '🧓', '🧔'];
-  if (props.roomPlayers && props.roomPlayers.length > 0) {
-    const absSeat = relToAbsSeat(relSeat);
-    const p = props.roomPlayers.find((x: any) => x?.seat === absSeat) || props.roomPlayers[absSeat];
-    if (p && p.name) {
-      const pName = String(p.name);
-      const shortName = pName.length > 4 ? `${pName.slice(0, 3)}..` : pName;
-      return {
-        name: shortName,
-        avatar: p.avatar || defaultEmojis[relSeat],
-      };
-    }
-  }
-  return {
-    name: defaultNames[relSeat],
-    avatar: defaultEmojis[relSeat],
-  };
-}
-
-  function getOpponentTotalTileCount(relSeat: number): number {
-    if (dealingPhase.value === 'dealing_tiles') {
-      return oppHandsDealtCount.value[relSeat - 1] || 0;
-    }
-    if (dealingPhase.value === 'rolling_dice') return 0;
-    const botIdx = relSeat - 1;
-    ensureOpponentHandSize(botIdx);
-    // 头像角标展示当前“剩余站立手牌数”：碰牌/杠牌亮副后手牌相应减少（如 13 -> 11 -> 10）
-    return oppHands.value[botIdx]?.length || 0;
-  }
-
-  // 1. Top: North (顶部玩家: 蓝色椭圆头像)
-  const northInfo = getPlayerInfoByRelSeat(2);
-  const northCount = getOpponentTotalTileCount(2);
-  const northAbs = relToAbsSeat(2);
-  drawOvalOpponentAvatar(
-    width / 2,
-    26,
-    52,
-    22,
-    northInfo.avatar,
-    northInfo.name,
-    northCount,
-    '#3B82F6',
-    turnPlayer.value === 2 && dealingPhase.value === 'playing',
-    'horizontal',
-    dealerSeat.value === 2,
-    turnCountdown.value,
-    isSeatAutoManaged(northAbs),
-    isSeatDisconnected(northAbs)
-  );
-
-  // 牌墙横幅：显示在顶部头像左边
-  const wallBoxW = 90;
-  const wallBoxH = 26;
-  const wallBoxX = width / 2 - 52 - wallBoxW - 10;
-  const wallBoxY = 13;
-
-  ctx.save();
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.roundRect(wallBoxX, wallBoxY, wallBoxW, wallBoxH, 13);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = 'bold 11px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(`🀄 牌墙 ${wallCount.value}张`, wallBoxX + wallBoxW / 2, wallBoxY + wallBoxH / 2);
-  ctx.restore();
-
-  // 倒计时：显示在顶部头像右边 (仅纯红色数字，无时钟图标与思考中文字)
-  if (dealingPhase.value === 'playing') {
-    const cdBoxW = 34;
-    const cdBoxH = 26;
-    const cdBoxX = width / 2 + 52 + 10;
-    const cdBoxY = 13;
-
-    ctx.save();
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
-    ctx.strokeStyle = '#EF4444';
-    ctx.lineWidth = 1.5;
-    ctx.shadowColor = 'rgba(239, 68, 68, 0.6)';
-    ctx.shadowBlur = 8;
-    ctx.beginPath();
-    ctx.roundRect(cdBoxX, cdBoxY, cdBoxW, cdBoxH, 13);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#EF4444';
-    ctx.font = 'bold 15px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const activeSec = isClaiming.value ? claimCountdown.value : turnCountdown.value;
-    ctx.fillText(String(Math.max(0, activeSec)), cdBoxX + cdBoxW / 2, cdBoxY + cdBoxH / 2 + 0.5);
-    ctx.restore();
-  }
-
-  // 2. Left: West (左玩家: 红色椭圆头像)
-  const westInfo = getPlayerInfoByRelSeat(3);
-  const westCount = getOpponentTotalTileCount(3);
-  const westAbs = relToAbsSeat(3);
-  drawOvalOpponentAvatar(
-    30,
-    90,
-    22,
-    42,
-    westInfo.avatar,
-    westInfo.name,
-    westCount,
-    '#EF4444',
-    turnPlayer.value === 3 && dealingPhase.value === 'playing',
-    'vertical',
-    dealerSeat.value === 3,
-    turnCountdown.value,
-    isSeatAutoManaged(westAbs),
-    isSeatDisconnected(westAbs)
-  );
-
-  // 3. Right: East (右玩家: 绿色椭圆头像)
-  const eastInfo = getPlayerInfoByRelSeat(1);
-  const eastCount = getOpponentTotalTileCount(1);
-  const eastAbs = relToAbsSeat(1);
-  drawOvalOpponentAvatar(
-    width - 30,
-    90,
-    22,
-    42,
-    eastInfo.avatar,
-    eastInfo.name,
-    eastCount,
-    '#10B981',
-    turnPlayer.value === 1 && dealingPhase.value === 'playing',
-    'vertical',
-    dealerSeat.value === 1,
-    turnCountdown.value,
-    isSeatAutoManaged(eastAbs),
-    isSeatDisconnected(eastAbs)
-  );
-
-  // Discard Pool (凸字形样式：上部宽 560px 紧贴顶部头像底部，下部向左右延伸至 644px，底部显示三个玩家碰牌)
-  const neckLeft = 60;
-  const neckRight = width - 60; // 620
-  const topY = 48; // 紧贴顶部头像底部 (26 + 22 = 48)
-  const stepY = 134; // 左右头像底部下方 (90 + 42 = 132)
-  const bodyLeft = 18; // 移除碰牌显示区后向左延伸
-  const bodyRight = width - 18; // 662，移除碰牌显示区后向右延伸
-  const bottomY = 179; // 弃牌框在第四行底部切割截断 (四行容量 21+21+21+24=87 张)
-
-  // 绘制凸字形路径 (圆润外角 + 紧凑内角)
-  const traceConvexPath = (c: CanvasRenderingContext2D, r = 5) => {
-    c.beginPath();
-    // 顶部凸颈 (Neck)
-    c.moveTo(neckLeft + r, topY);
-    c.lineTo(neckRight - r, topY);
-    c.arcTo(neckRight, topY, neckRight, topY + r, r);
-
-    // 右侧颈部向下延伸至内转角
-    c.lineTo(neckRight, stepY - 2);
-    c.arcTo(neckRight, stepY, neckRight + 2, stepY, 2);
-
-    // 右肩水平向右延伸
-    c.lineTo(bodyRight - r, stepY);
-    c.arcTo(bodyRight, stepY, bodyRight, stepY + r, r);
-
-    // 右下身垂直向下至第四行底部
-    c.lineTo(bodyRight, bottomY - r);
-    c.arcTo(bodyRight, bottomY, bodyRight - r, bottomY, r);
-
-    // 底部水平边向左
-    c.lineTo(bodyLeft + r, bottomY);
-    c.arcTo(bodyLeft, bottomY, bodyLeft, bottomY - r, r);
-
-    // 左下身垂直向上
-    c.lineTo(bodyLeft, stepY + r);
-    c.arcTo(bodyLeft, stepY, bodyLeft + r, stepY, r);
-
-    // 左肩水平向右延伸至内转角
-    c.lineTo(neckLeft - 2, stepY);
-    c.arcTo(neckLeft, stepY, neckLeft, stepY - 2, 2);
-
-    // 左侧颈部向上回到顶部
-    c.lineTo(neckLeft, topY + r);
-    c.arcTo(neckLeft, topY, neckLeft + r, topY, r);
-    c.closePath();
-  };
-
-  // 弃牌框边框线全透明：不绘制外边框线与底框，弃牌自然清透地悬浮于桌布之上
-
-  // 弃牌区磁贴排布：4行自适应排满（21 + 21 + 21 + 24 = 87 张，完全满足全场弃牌需求）
-  const tileW = 23;
-  const tileH = 31;
-  const gapX = 3;
-  const gapY = 1;
-
-  interface RiverRowConfig {
-    ry: number;
-    capacity: number;
-    startX: number;
-  }
-  const rowConfigs: RiverRowConfig[] = [];
-  let curY = 50;
-  for (let r = 0; r < 4; r++) {
-    const ry = curY;
-    const isNeck = ry < stepY;
-    const minX = isNeck ? neckLeft : bodyLeft;
-    const maxX = isNeck ? neckRight : bodyRight;
-    const availW = (maxX - minX) - 16;
-    const capacity = Math.floor((availW + gapX) / (tileW + gapX));
-    const actualW = capacity * tileW + (capacity - 1) * gapX;
-    const startX = minX + Math.floor(((maxX - minX) - actualW) / 2);
-    rowConfigs.push({ ry, capacity, startX });
-    curY += tileH + gapY;
-  }
-
-  // 21 + 21 + 21 + 24 = 87 张
-  const visibleDiscards = discards.value.slice(-87);
-
-  if (visibleDiscards.length === 0) {
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
-    ctx.font = '500 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('暂无弃牌', width / 2, 114);
-  } else {
-    let tileIndex = 0;
-    for (let r = 0; r < rowConfigs.length && tileIndex < visibleDiscards.length; r++) {
-      const config = rowConfigs[r];
-      for (let c = 0; c < config.capacity && tileIndex < visibleDiscards.length; c++) {
-        const tile = visibleDiscards[tileIndex];
-        const rx = config.startX + c * (tileW + gapX);
-        const ry = config.ry;
-
-        renderMahjongTile(ctx, tile, rx, ry, tileW, tileH, {
-          isSmall: true,
-        });
-
-        if (tileIndex === visibleDiscards.length - 1) {
-          ctx.save();
-          ctx.strokeStyle = '#FDE047';
-          ctx.lineWidth = 1.8;
-          ctx.beginPath();
-          ctx.roundRect(rx - 0.5, ry - 0.5, tileW + 1, tileH + 1, 3);
-          ctx.stroke();
-          ctx.restore();
-        }
-
-        tileIndex++;
-      }
-    }
-  }
-
-  // 三个玩家碰牌展示区：横幅底板与标签完全透明，不显示“暂无碰牌”，哪位玩家碰牌了才动态展示其标签与牌张
-  const activeOpponents: { label: string; color: string; melds: MahjongTile[][] }[] = [];
-  if (oppMelds.value[2].length > 0) {
-    activeOpponents.push({ label: '西席碰牌', color: '#EF4444', melds: oppMelds.value[2] });
-  }
-  if (oppMelds.value[1].length > 0) {
-    activeOpponents.push({ label: '北席碰牌', color: '#3B82F6', melds: oppMelds.value[1] });
-  }
-  if (oppMelds.value[0].length > 0) {
-    activeOpponents.push({ label: '东席碰牌', color: '#10B981', melds: oppMelds.value[0] });
-  }
-
-  const oppTileW = 23;
-  const oppTileH = 31;
-  const meldBaseY = 186;
-  const rowSpacing = 36;
-
-  activeOpponents.forEach((opp, rowIdx) => {
-    const rowY = meldBaseY + rowIdx * rowSpacing;
-    const labelX = bodyLeft + 8; // x = 26
-
-    // 全透明标签：无底色、无外框，仅以纯粹高清色字与柔光呈现
-    ctx.save();
-    ctx.shadowColor = opp.color;
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = opp.color;
-    ctx.font = 'bold 12px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(opp.label, labelX, rowY + oppTileH / 2);
-    ctx.restore();
-
-    // 碰/杠的牌（与弃牌池相同尺寸 23x31）
-    const tilesStartX = labelX + 62;
-    let curX = tilesStartX;
-    opp.melds.forEach((set) => {
-      set.forEach((t) => {
-        renderMahjongTile(ctx, t, curX, rowY, oppTileW, oppTileH, {
-          isSmall: true,
-          borderColor: opp.color,
-          borderWidth: 1.5,
-        });
-        curX += oppTileW + 2;
-      });
-      curX += 8; // 副与副之间的清晰间隔
-    });
+  renderMahjongTableFrame(canvas, {
+    tableTheme: props.tableTheme,
+    dealingPhase: dealingPhase.value,
+    turnPlayer: turnPlayer.value,
+    dealerSeat: dealerSeat.value,
+    wallCount: wallCount.value,
+    isClaiming: isClaiming.value,
+    claimCountdown: claimCountdown.value,
+    turnCountdown: turnCountdown.value,
+    myHand: myHand.value,
+    myHandDealtCount: myHandDealtCount.value,
+    oppHands: oppHands.value,
+    oppHandsDealtCount: oppHandsDealtCount.value,
+    oppMelds: oppMelds.value,
+    meldedTiles: meldedTiles.value,
+    discards: discards.value,
+    selectedIndex: selectedIndex.value,
+    handFlipProgress: handFlipProgress.value,
+    roomPlayers: props.roomPlayers,
+    relToAbsSeat,
+    isSeatAutoManaged,
+    isSeatDisconnected,
+    ensureOpponentHandSize,
   });
-
-  // Coordinated Non-overlapping Layout: Left Melded Sets (碰牌 / 杠牌亮副) + Hand Tiles
-  const handLen = dealingPhase.value === 'playing' || dealingPhase.value === 'sorting_tiles'
-    ? myHand.value.length
-    : (dealerSeat.value === 0 ? 14 : 13);
-  const handTileW = 38;
-  const handTileH = 56;
-  const gap = 3;
-  const hasDrawn14 = (myHand.value.length % 3 === 2) || (dealerSeat.value === 0 && dealingPhase.value !== 'playing');
-  const drawnOffset = hasDrawn14 ? 14 : 0;
-  const handTotalW = handLen > 0 ? (handLen * handTileW + (handLen - 1) * gap + drawnOffset) : 0;
-
-  const meldTileW = 28;
-  const meldTileH = 40;
-  const meldGap = 2;
-  const meldSetGap = 12;
-  const meldsToHandGap = 18;
-  const meldStartX = 24;
-
-  let totalMeldsW = 0;
-  if (meldedTiles.value.length > 0) {
-    meldedTiles.value.forEach((set, sIdx) => {
-      totalMeldsW += set.length * meldTileW + (set.length - 1) * meldGap;
-      if (sIdx < meldedTiles.value.length - 1) totalMeldsW += meldSetGap;
-    });
-  }
-
-  // Left side is used for melded tiles (碰/杠牌); hand is placed to the right of melds
-  let handStartX = 24;
-  if (totalMeldsW > 0) {
-    handStartX = meldStartX + totalMeldsW + meldsToHandGap;
-  } else {
-    handStartX = Math.max(20, Math.floor((width - handTotalW) / 2));
-  }
-  const baseY = height - 142; // 288，与向下延伸至 298 的弃牌框保持 14px 纯净间隙
-
-
-
-  // 1. Draw Melded Sets on the LEFT (左边放碰的牌 / 杠的牌)
-  if (meldedTiles.value.length > 0) {
-    let meldOffsetX = meldStartX;
-    const meldY = baseY + 40 + (handTileH - meldTileH);
-
-    // Label above melded tiles
-    ctx.save();
-    ctx.fillStyle = '#CBD5E1';
-    ctx.font = '600 10px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('亮副 (碰/杠):', meldStartX, meldY - 5);
-    ctx.restore();
-
-    meldedTiles.value.forEach((set) => {
-      set.forEach((t) => {
-        renderMahjongTile(ctx, t, meldOffsetX, meldY, meldTileW, meldTileH, { isSmall: true });
-        meldOffsetX += meldTileW + meldGap;
-      });
-      meldOffsetX += meldSetGap - meldGap;
-    });
-
-    // Decorative separator line between melded tiles and hand
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([2, 3]);
-    ctx.beginPath();
-    ctx.moveTo(handStartX - 10, baseY + 36);
-    ctx.lineTo(handStartX - 10, baseY + 40 + handTileH);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 2. Draw Hand Tiles (with phases: rolling_dice -> dealing_tiles -> sorting_tiles -> playing)
-  if (dealingPhase.value === 'rolling_dice') {
-    // 打色子阶段：桌前整洁，手牌不显示
-  } else if (dealingPhase.value === 'dealing_tiles') {
-    // 抓牌要牌阶段：牌背朝上发牌，展示翠绿麻将牌背
-    const dealtLen = myHandDealtCount.value;
-    const isDealerWith14 = dealerSeat.value === 0;
-    for (let idx = 0; idx < dealtLen; idx++) {
-      const isDrawn14 = idx === 13 && isDealerWith14;
-      const extraOffset = isDrawn14 ? 14 : 0;
-      const tx = handStartX + idx * (handTileW + gap) + extraOffset;
-      const ty = baseY + 40;
-      renderMahjongTileBack(ctx, tx, ty, handTileW, handTileH);
-    }
-  } else if (dealingPhase.value === 'sorting_tiles') {
-    // 理牌翻面动效 (牌背收缩 -> 牌面展开)
-    const p = handFlipProgress.value;
-    myHand.value.forEach((t, idx) => {
-      const isDrawn14 = idx === handLen - 1 && hasDrawn14;
-      const extraOffset = isDrawn14 ? 14 : 0;
-      const tx = handStartX + idx * (handTileW + gap) + extraOffset;
-      const ty = baseY + 40;
-
-      if (p < 0.5) {
-        const scaleY = 1 - p * 2;
-        renderMahjongTileBack(ctx, tx, ty, handTileW, handTileH, { scaleY });
-      } else {
-        const scaleY = (p - 0.5) * 2;
-        renderMahjongTile(ctx, t, tx, ty, handTileW, handTileH, { scaleY });
-      }
-    });
-  } else {
-    // 对战进行中：明亮清晰的整副手牌
-    myHand.value.forEach((t, idx) => {
-      const isSel = selectedIndex.value === idx;
-      const isDrawn14 = idx === handLen - 1 && hasDrawn14;
-      const extraOffset = isDrawn14 ? 14 : 0;
-
-      const tx = handStartX + idx * (handTileW + gap) + extraOffset;
-      const ty = isSel ? baseY + 40 - 16 : baseY + 40;
-
-      renderMahjongTile(ctx, t, tx, ty, handTileW, handTileH, { isSelected: isSel });
-    });
-  }
 }
 
 function onCanvasClick(e: MouseEvent | PointerEvent) {
@@ -4336,7 +2770,7 @@ function botPlay(seat: number, next: () => void) {
 
     // ② 明杠 (手牌持 3 张同牌 + 抓到他人打出牌，牌墙有余牌可补才允许杠)
     if (canMeld && wallPool.length > 0 && matches.length === 3 && Math.random() < 0.95) {
-      const fromSeat = d.discardBy !== undefined ? d.discardBy : 0;
+      const fromSeat = typeof d.discardBy === 'number' ? d.discardBy : -1;
       const takeThree = matches.slice(0, 3);
       const rmIds = new Set(takeThree.map(c => c.id));
       const remainingHand = botHand.filter(c => !rmIds.has(c.id));
@@ -4348,8 +2782,8 @@ function botPlay(seat: number, next: () => void) {
         discards.value.pop();
       }
       lastDiscarded.value = null;
-      seatKongScores.value[seat] += 10;
       if (fromSeat >= 0 && fromSeat < 4 && fromSeat !== seat) {
+        seatKongScores.value[seat] += 10;
         seatKongScores.value[fromSeat] -= 10;
         if (fromSeat === 0) {
           kongRecords.value.push(`【${SEAT_NAMES[seat]}】明杠您 (-10分)`);
@@ -4800,7 +3234,7 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
 
     const fromRelSeat = evt.fromSeat !== undefined
       ? absToRelSeat(Number(evt.fromSeat))
-      : (lastDiscarded.value?.discardBy ?? 0);
+      : (typeof lastDiscarded.value?.discardBy === 'number' ? lastDiscarded.value.discardBy : -1);
 
     const oppHand = oppHands.value[botIdx] || [];
     const serverGangMeld = Array.isArray(evt.meldTiles) && evt.meldTiles.length === 4 ? evt.meldTiles : null;
@@ -4845,18 +3279,30 @@ function handleRemoteGameEvent(evtAbsSeat: number, evt: any) {
       }
     }
 
-    if (gType === 'ming' && fromRelSeat >= 0 && fromRelSeat < 4 && fromRelSeat !== relSeat) {
+    if (Array.isArray(evt.seatKongScores) && evt.seatKongScores.length === 4) {
+      for (let relS = 0; relS < 4; relS++) {
+        seatKongScores.value[relS] = evt.seatKongScores[relToAbsSeat(relS)] || 0;
+      }
+    } else if (gType === 'ming' && fromRelSeat >= 0 && fromRelSeat < 4 && fromRelSeat !== relSeat) {
       seatKongScores.value[relSeat] += 10;
       seatKongScores.value[fromRelSeat] -= 10;
-      if (fromRelSeat === 0) {
-        kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】明杠您 (-10分)`);
-      }
-    } else {
+    } else if (gType !== 'ming') {
       for (let k = 0; k < 4; k++) {
         if (k !== relSeat) seatKongScores.value[k] -= 10;
       }
       seatKongScores.value[relSeat] += 30;
-      kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】${gType === 'an' ? '暗杠' : '补杠'}各家输10分`);
+    }
+
+    if (Array.isArray(evt.kongHistory)) {
+      kongRecords.value = formatKongHistoryRecords(evt.kongHistory);
+    } else if (gType === 'ming' && fromRelSeat >= 0 && fromRelSeat < 4 && fromRelSeat !== relSeat) {
+      if (fromRelSeat === 0) {
+        kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】明杠您 (-10分)`);
+      } else {
+        kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】明杠【${SEAT_NAMES[fromRelSeat]}】(+10分)`);
+      }
+    } else if (gType !== 'ming') {
+      kongRecords.value.push(`【${SEAT_NAMES[relSeat]}】${gType === 'an' ? '暗杠' : '补杠'}各家输10分 (-10分)`);
     }
 
     if (wallPool.length > 0 || evt.suppTile) {
@@ -5267,6 +3713,9 @@ function onWsMessage(ev: MessageEvent) {
             for (let relS = 0; relS < 4; relS++) {
               seatKongScores.value[relS] = evt.seatKongScores[relToAbsSeat(relS)] || 0;
             }
+          }
+          if (Array.isArray(evt.kongHistory)) {
+            kongRecords.value = formatKongHistoryRecords(evt.kongHistory);
           }
           if (evt.suppTile) {
             if (lastOptimisticSuppTileId && evt.suppTile.id !== lastOptimisticSuppTileId) {

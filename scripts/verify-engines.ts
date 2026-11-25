@@ -20,10 +20,19 @@ import {
   checkMahjongWin,
   computeMahjongSettlement,
 } from '../src/engine/mahjongRules.ts';
+import { calculateMahjongSettlement } from '../src/games/mahjong/settlement.ts';
 import {
   calculateNext0600Countdown,
   getToday0600CycleInfo,
 } from '../src/engine/shisanshuiBookingTrain.ts';
+import {
+  sanitizeDealForSeat,
+  sanitizeBoardStateForSeat,
+} from '../src/server/sanitizers.ts';
+import {
+  sortMahjongHand,
+  isYiWuJiuMaTile,
+} from '../src/games/mahjong/aiWinEngine.ts';
 
 function yCard(rank: number, suit: '♠' | '♥' | '♣' | '♦'): YansanCard {
   const suitVal = suit === '♠' ? 4 : suit === '♥' ? 3 : suit === '♣' ? 2 : 1;
@@ -434,9 +443,102 @@ function runMahjongTests() {
   );
   assert.equal(sortedSettle.winningMelds.length, 2);
   assert.equal(sortedSettle.winningMelds[0].length, 3);
+
+  // 6. Self-draw with 0 hit Ma across every seat 0..3: winner MUST win +30, opponents MUST lose -10 each
+  const zeroHitWallMa = Array.from({ length: 8 }, (_, i) => mjTile('wan', 2, `miss${i}`)); // 2-wan never hits Ma
+  for (let wSeat = 0; wSeat < 4; wSeat++) {
+    const zeroMaStl = computeMahjongSettlement(wSeat, stdWin, [], zeroHitWallMa, 'hongzhong-6', [0, 0, 0, 0]);
+    assert.equal(zeroMaStl.hitMaCount, 0, '2-wan Ma tiles must hit 0 Ma');
+    assert.equal(zeroMaStl.payoutPerOpponent, 10, '0-Ma payoutPerOpponent must be base 10');
+    assert.equal(zeroMaStl.netCoinsPerSeat[wSeat], 30, `Winner seat ${wSeat} with 0 Ma must win +30`);
+    for (let opp = 0; opp < 4; opp++) {
+      if (opp !== wSeat) {
+        assert.equal(zeroMaStl.netCoinsPerSeat[opp], -10, `Opponent seat ${opp} must lose -10 when seat ${wSeat} wins 0 Ma`);
+      }
+    }
+    assert.equal(zeroMaStl.netCoinsPerSeat.reduce((a, b) => a + b, 0), 0, '0-Ma settlement must be zero-sum');
+  }
+
+  // 7. Kong scoring (明杠 +10/-10, 暗杠 +30/-10*3, 补杠 +30/-10*3) combined with 0-Ma Zimo must stay zero-sum
+  const kongScores: [number, number, number, number] = [0, 0, 0, 0];
+  // Seat 1 明杠 Seat 0 -> seat1 +10, seat0 -10
+  kongScores[1] += 10;
+  kongScores[0] -= 10;
+  // Seat 0 暗杠 -> seat0 +30, seats 1/2/3 -10 each => net [20, 0, -10, -10]
+  kongScores[0] += 30;
+  kongScores[1] -= 10;
+  kongScores[2] -= 10;
+  kongScores[3] -= 10;
+  // Seat 2 补杠 -> seat2 +30, seats 0/1/3 -10 each => net [10, -10, 20, -20]
+  kongScores[2] += 30;
+  kongScores[0] -= 10;
+  kongScores[1] -= 10;
+  kongScores[3] -= 10;
+  assert.deepEqual(kongScores, [10, -10, 20, -20]);
+  assert.equal(kongScores.reduce((a, b) => a + b, 0), 0, 'Kong scores alone must be zero-sum');
+
+  const kongPlusZeroMa = computeMahjongSettlement(3, stdWin, [], zeroHitWallMa, 'hongzhong-6', kongScores);
+  // Seat 3 wins Zimo 0 Ma (+30) + kong (-20) = +10; Seat 0 (-10 + 10 = 0); Seat 1 (-10 - 10 = -20); Seat 2 (-10 + 20 = +10)
+  assert.deepEqual(kongPlusZeroMa.netCoinsPerSeat, [0, -20, 10, 10]);
+  assert.equal(kongPlusZeroMa.netCoinsPerSeat.reduce((a, b) => a + b, 0), 0, 'Kong + Zimo settlement must be zero-sum');
+
+  // 8. Client settlement helper fallback consistency (0-Ma Zimo + tie stalemate)
+  const fallbackSelfWin = calculateMahjongSettlement({ winner: 0, payoutPerOpponent: 10 });
+  assert.equal(fallbackSelfWin.scorePoints, 30);
+  assert.equal(fallbackSelfWin.coinsDelta, 30);
+  const fallbackOppWin = calculateMahjongSettlement({ winner: 1, payoutPerOpponent: 10 });
+  assert.equal(fallbackOppWin.scorePoints, -10);
+  assert.equal(fallbackOppWin.coinsDelta, -10);
+  const stalemateWithKong = calculateMahjongSettlement({ winner: -1, rewardCoins: 20 });
+  assert.equal(stalemateWithKong.isTie, true);
+  assert.equal(stalemateWithKong.scorePoints, 20);
+  assert.equal(stalemateWithKong.coinsDelta, 20);
+  // 9. Extracted Mahjong aiWinEngine helpers
+  const unsortedAiTiles = [
+    { id: 'z1', type: 'zi' as const, value: 5, text: '红中', color: '#DC2626' },
+    { id: 'to2', type: 'tong' as const, value: 9, text: '九筒', color: '#2563EB' },
+    { id: 'w1', type: 'wan' as const, value: 1, text: '一万', color: '#DC2626' },
+    { id: 'ti5', type: 'tiao' as const, value: 5, text: '五条', color: '#16A34A' },
+  ];
+  assert.deepEqual(
+    sortMahjongHand(unsortedAiTiles).map((t) => t.id),
+    ['w1', 'ti5', 'to2', 'z1'],
+    'sortMahjongHand must sort wan -> tiao -> tong -> zi'
+  );
+  assert.equal(isYiWuJiuMaTile(unsortedAiTiles[0]), true, '红中 must hit Ma');
+  assert.equal(isYiWuJiuMaTile(unsortedAiTiles[2]), true, '一万 must hit Ma');
+  assert.equal(
+    isYiWuJiuMaTile({ id: 'w2', type: 'wan', value: 2, text: '二万', color: '#DC2626' }),
+    false,
+    '二万 must not hit Ma'
+  );
+}
+
+function runSanitizerTests() {
+  const deal = {
+    deck: ['secret-deck'],
+    initialSeatCards: [[1], [2]],
+    seatCards: [
+      [yCard(3, '♠'), yCard(4, '♦')],
+      [yCard(15, '♠'), yCard(14, '♥')],
+    ],
+  };
+  const sanitized = sanitizeDealForSeat('yansan', deal, 0);
+  assert.equal(sanitized.deck, undefined, 'sanitizeDealForSeat must strip deck');
+  assert.equal(sanitized.initialSeatCards, undefined, 'sanitizeDealForSeat must strip initialSeatCards');
+  assert.equal(sanitized.seatCards[0][0].rank, 3, 'Recipient seat keeps visible cards');
+  assert.equal(sanitized.seatCards[1][0].hidden, true, 'Opponent seat cards must be masked');
+
+  const maskedBoard = sanitizeBoardStateForSeat(
+    { phase: 'playing', extraState: { lastDrawnSeat: 1, lastDrawnTile: { id: 'wan-9-0', type: 'wan', value: 9 } } },
+    'mahjong',
+    0
+  );
+  assert.equal(maskedBoard.extraState.lastDrawnTile.hidden, true, 'Opponent drawn tile must be masked during play');
 }
 
 runYansanTests();
 runShisanshuiTests();
 runMahjongTests();
-console.log('✅ All rule engine regression tests passed (Yansan, Shisanshui, Booking, Mahjong).');
+runSanitizerTests();
+console.log('✅ All rule engine regression tests passed (Yansan, Shisanshui, Booking, Mahjong, Sanitizers).');

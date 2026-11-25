@@ -3056,21 +3056,8 @@ function connectWs() {
                 currentView.value = 'arena';
                 soundFX.playVictory?.();
               }
-            } else if (
-              msg.status === 'waiting' &&
-              msg.players.length < maxP &&
-              currentView.value === 'arena' &&
-              matchedUpdateSelf?.isReady
-            ) {
-              if (msg.roomId) {
-                try {
-                  localStorage.removeItem(`mahjong_table_snapshot_${msg.roomId}`);
-                } catch {}
-              }
-              clearActiveGameLock();
-              currentRoomDeal.value = null;
-              currentView.value = 'waiting-room';
-              triggerSpeechBubble('⏱️ 部分牌友已离开或结算超时，已回到备战席等待新牌友');
+            } else if (currentView.value === 'arena' && matchedUpdateSelf) {
+              saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal || currentRoomDeal.value);
             }
           }
       } else if (msg.type === 'scene_join_ack') {

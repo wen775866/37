@@ -1813,23 +1813,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
               return;
             }
 
-            // 若已有其他牌友主动退出大厅，而剩余在线玩家已全部准备完毕，立即转入等待席匹配新牌友
-            if (room.status === 'finished' && room.players.length > 0 && room.players.length < room.maxPlayers && room.players.every((p: any) => p.isReady)) {
-              room.status = 'waiting';
-              delete (room as any).deal;
-              delete (room as any).settlementExpiresAt;
-              room.players.forEach((p: any, idx: number) => {
-                p.seat = idx;
-              });
-              if (authRoom) {
-                authRoom.status = 'waiting';
-                delete authRoom.deal;
-                delete authRoom.settlementExpiresAt;
-                authRoom.players = room.players.map((p: any, idx: number) => ({ ...p, seat: idx }));
-                authRoom.boardState = createDefaultBoardState(authRoom.id, authRoom.gameType);
-              }
-            }
-
+            // 若已有其他牌友离开导致人数不足，保持当前 finished 结算视图与已准备人数同步，待新牌友加入满员自动开下一局
             broadcast({
               type: 'scene_room_update',
               roomId: room.id,
@@ -1972,7 +1956,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
           if (!room) {
             for (const r of sceneWaitingRooms.values()) {
-              if (r.gameType === gType && r.sceneMode === sMode && r.status === 'waiting' && r.players.length < r.maxPlayers) {
+              if (
+                r.gameType === gType &&
+                r.sceneMode === sMode &&
+                r.players.length < r.maxPlayers &&
+                (r.status === 'waiting' || (r.status === 'finished' && r.players.length > 0 && r.players.every((pl: any) => pl.isReady)))
+              ) {
                 room = r;
                 break;
               }
@@ -2035,7 +2024,10 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           if (existingIdx !== -1) {
             room.players[existingIdx] = { ...room.players[existingIdx], ...p, socketId: currentSocketId, isReady: true } as any;
           } else if (room.players.length < room.maxPlayers) {
-            p.seat = room.players.length;
+            const usedSeats = new Set(room.players.map((pl) => pl.seat));
+            let freeSeat = 0;
+            while (usedSeats.has(freeSeat) && freeSeat < room.maxPlayers) freeSeat++;
+            p.seat = freeSeat;
             (p as any).socketId = currentSocketId;
             (p as any).isReady = true;
             room.players.push(p);
@@ -2199,27 +2191,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                   sceneWaitingRooms.delete(id);
                   rooms.delete(id);
                 } else if (wasFinishedSettlement) {
-                  // 结算期间有人主动退出大厅：保留剩余玩家原席位编号与结算面板，若剩余玩家已全员准备则立即转入 waiting 匹配新牌友
+                  // 结算期间有人主动退出大厅：保留剩余玩家原席位编号、结算界面与准备人数统计
                   if (authRoom) {
                     authRoom.players = (authRoom.players || []).filter(
                       (ap: any) => ap.id !== leavingPl.id && (!ap.socketId || ap.socketId !== currentSocketId)
                     );
-                  }
-                  const allRemainingReady = room.players.every((pl: any) => pl.isReady);
-                  if (allRemainingReady && room.players.length < room.maxPlayers) {
-                    room.status = 'waiting';
-                    delete (room as any).deal;
-                    delete (room as any).settlementExpiresAt;
-                    room.players.forEach((pl, idx) => {
-                      pl.seat = idx;
-                    });
-                    if (authRoom) {
-                      authRoom.status = 'waiting';
-                      delete (authRoom as any).deal;
-                      delete authRoom.settlementExpiresAt;
-                      authRoom.players = room.players.map((pl, idx) => ({ ...pl, seat: idx }));
-                      authRoom.boardState = createDefaultBoardState(authRoom.id, authRoom.gameType);
-                    }
                   }
                   broadcast({
                     type: 'scene_room_update',
@@ -3970,19 +3946,15 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           sceneWaitingRooms.delete(room.id);
           rooms.delete(room.id);
         } else {
-          readyPlayers.forEach((p: any, idx: number) => {
-            p.seat = idx;
+          readyPlayers.forEach((p: any) => {
             p.isReady = true;
           });
           if (sceneRoom) {
             sceneRoom.players = readyPlayers;
-            sceneRoom.status = 'waiting';
-            delete (sceneRoom as any).deal;
+            sceneRoom.status = 'finished';
           }
-          room.players = readyPlayers.map((p: any, idx: number) => ({ ...p, seat: idx }));
-          room.status = 'waiting';
-          delete (room as any).deal;
-          room.boardState = createDefaultBoardState(room.id, room.gameType);
+          room.players = readyPlayers.map((p: any) => ({ ...p }));
+          room.status = 'finished';
           broadcast({
             type: 'scene_room_update',
             roomId: room.id,
@@ -3990,7 +3962,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             sceneMode: room.sceneMode || sceneRoom?.sceneMode || '',
             players: room.players,
             maxPlayers: room.maxPlayers || sceneRoom?.maxPlayers || 4,
-            status: 'waiting',
+            status: 'finished',
           });
         }
         continue;

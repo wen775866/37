@@ -443,17 +443,25 @@
               <span>退出大厅</span>
             </button>
 
-            <button
-              type="button"
-              @click="onRestartGame"
-              :disabled="hasClickedReady"
-              class="px-5 sm:px-8 py-1.5 sm:py-2 text-xs sm:text-sm md:text-base font-black rounded-lg shadow-md ring-1 transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
-              :class="hasClickedReady
-                ? 'bg-[#137333] text-white ring-emerald-300 opacity-90'
-                : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] text-white shadow-amber-700/30 ring-amber-300'"
-            >
-              <span>{{ hasClickedReady ? `✅ 已准备 · 等待牌友 (${readyPlayersCount}/4)...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}</span>
-            </button>
+            <div class="flex items-center gap-2">
+              <span
+                v-if="!hasClickedReady && isOnlineMultiplayerRoom"
+                class="text-[11px] sm:text-xs font-bold text-[#78350F] bg-[#FAF4E8] px-2 py-1 rounded-md border border-[#D8C7B0]"
+              >
+                已有 {{ readyPlayersCount }}/4 人继续
+              </span>
+              <button
+                type="button"
+                @click="onRestartGame"
+                :disabled="hasClickedReady"
+                class="px-5 sm:px-8 py-1.5 sm:py-2 text-xs sm:text-sm md:text-base font-black rounded-lg shadow-md ring-1 transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
+                :class="hasClickedReady
+                  ? 'bg-[#137333] text-white ring-emerald-300 opacity-90'
+                  : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] text-white shadow-amber-700/30 ring-amber-300'"
+              >
+                <span>{{ hasClickedReady ? `✅ 已继续 · 已有 ${readyPlayersCount}/4 人继续游戏...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -494,7 +502,7 @@
               class="px-6 py-2 text-xs sm:text-sm font-black rounded-xl shadow-md ring-1 active:scale-95 cursor-pointer text-white"
               :class="hasClickedReady ? 'bg-[#137333] ring-emerald-300 opacity-90' : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] ring-amber-300'"
             >
-              {{ hasClickedReady ? `✅ 已准备 · 等待牌友 (${readyPlayersCount}/4)...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}
+              {{ hasClickedReady ? `✅ 已继续 · 已有 ${readyPlayersCount}/4 人继续游戏...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}
             </button>
           </div>
         </div>
@@ -876,13 +884,17 @@ const isAllOtherPlayersBots = computed(() => {
 const hasClickedReady = ref(false);
 const readyPlayersCount = computed(() => {
   if (isAllOtherPlayersBots.value) return 4;
-  if (!props.roomPlayers || props.roomPlayers.length === 0) return hasClickedReady.value ? 4 : 1;
+  if (!props.roomPlayers || props.roomPlayers.length === 0) return hasClickedReady.value ? 1 : 0;
   const count = props.roomPlayers.filter((p: any, idx: number) => {
-    if (isSeatBot(idx)) return true;
-    if (idx === mySeat.value) return hasClickedReady.value || Boolean(p.isReady);
-    return Boolean(p.isReady);
+    const pSeat = typeof p?.seat === 'number' ? p.seat : idx;
+    if (isSeatBot(pSeat)) return true;
+    const isSelf =
+      pSeat === mySeat.value ||
+      (props.currentUser?.id && (p?.id === props.currentUser.id || p?.originalId === props.currentUser.id));
+    if (isSelf) return hasClickedReady.value || Boolean(p?.isReady);
+    return Boolean(p?.isReady);
   }).length;
-  return Math.min(4, Math.max(1, count));
+  return Math.min(4, Math.max(0, count));
 });
 
 const isAutoHost = ref(false);

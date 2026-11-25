@@ -63,6 +63,35 @@ export function isBotLikePlayer(p: any): boolean {
   );
 }
 
+export function filterHumanScenePlayers(players: any[]): ScenePlayer[] {
+  if (!Array.isArray(players)) return [];
+  return players.filter((p) => p && !isBotLikePlayer(p) && (p.id || p.name));
+}
+
+export function pickBestWaitingRoom(
+  roomsList: Iterable<SceneWaitingRoom>,
+  gameType: string,
+  sceneMode: string
+): SceneWaitingRoom | undefined {
+  let best: SceneWaitingRoom | undefined;
+  let bestCount = -1;
+  for (const r of roomsList) {
+    if (
+      r &&
+      r.gameType === gameType &&
+      r.sceneMode === sceneMode &&
+      r.status === 'waiting'
+    ) {
+      const humanCount = filterHumanScenePlayers(r.players).length;
+      if (humanCount < r.maxPlayers && humanCount > bestCount) {
+        best = r;
+        bestCount = humanCount;
+      }
+    }
+  }
+  return best;
+}
+
 export interface RealtimeHubContext {
   rooms: Map<string, any>;
   sceneWaitingRooms: Map<string, SceneWaitingRoom>;

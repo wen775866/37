@@ -39,6 +39,22 @@ export interface RealPresenceCounts {
   shisanshui: number;
   mahjong: number;
   totalOnline: number;
+  sceneWaitingStats?: Record<string, SceneWaitingStat>;
+}
+
+export interface SceneWaitingStat {
+  gameType: string;
+  sceneMode: string;
+  waitingCount: number;
+  playingCount: number;
+  totalInScene: number;
+  activeTablesCount: number;
+  waitingPlayers: {
+    id: string;
+    name: string;
+    avatar: string;
+    coins: number;
+  }[];
 }
 
 class PresenceTracker {
@@ -117,10 +133,108 @@ class PresenceTracker {
     }
   }
 
+  private isBotPlayer(p: any): boolean {
+    if (!p) return false;
+    return Boolean(
+      p.isAi ||
+        p.isSimulated ||
+        p.isBot ||
+        p.id?.startsWith?.('BOT-') ||
+        p.id?.startsWith?.('sim-') ||
+        p.id?.startsWith?.('P-sim-')
+    );
+  }
+
+  private getAuthoritativeSeatMap(): Map<string, { gameType: GameType; sceneMode: string; status: string }> {
+    const map = new Map<string, { gameType: GameType; sceneMode: string; status: string }>();
+    if (!this.sceneWaitingRoomsRef) return map;
+    for (const room of this.sceneWaitingRoomsRef.values()) {
+      if (!room || !room.gameType || !room.sceneMode || !Array.isArray(room.players)) continue;
+      for (const pl of room.players) {
+        if (!pl || this.isBotPlayer(pl)) continue;
+        const entry = {
+          gameType: room.gameType as GameType,
+          sceneMode: room.sceneMode,
+          status: room.status || 'waiting',
+        };
+        if (pl.id) map.set(pl.id, entry);
+        if (pl.originalId) map.set(pl.originalId, entry);
+        if (pl.socketId) map.set(`sock:${pl.socketId}`, entry);
+      }
+    }
+    return map;
+  }
+
+  public getSceneWaitingStats(): Record<string, SceneWaitingStat> {
+    const stats: Record<string, SceneWaitingStat> = {};
+    if (!this.sceneWaitingRoomsRef) return stats;
+
+    const seenInScene = new Map<string, Set<string>>();
+    const seenWaitingInScene = new Map<string, Set<string>>();
+
+    for (const room of this.sceneWaitingRoomsRef.values()) {
+      if (!room || !room.sceneMode || !Array.isArray(room.players)) continue;
+      const mode = room.sceneMode;
+      if (!stats[mode]) {
+        stats[mode] = {
+          gameType: room.gameType || '',
+          sceneMode: mode,
+          waitingCount: 0,
+          playingCount: 0,
+          totalInScene: 0,
+          activeTablesCount: 0,
+          waitingPlayers: [],
+        };
+        seenInScene.set(mode, new Set());
+        seenWaitingInScene.set(mode, new Set());
+      }
+
+      const humanPlayers = room.players.filter((p: any) => p && !this.isBotPlayer(p));
+      if (humanPlayers.length === 0) continue;
+
+      const sceneSet = seenInScene.get(mode)!;
+      for (const p of humanPlayers) {
+        const key = p.originalId || p.id || p.name;
+        if (key) sceneSet.add(key);
+      }
+
+      if (room.status === 'waiting') {
+        const waitSet = seenWaitingInScene.get(mode)!;
+        if (humanPlayers.length > stats[mode].waitingCount) {
+          stats[mode].waitingCount = humanPlayers.length;
+        }
+        for (const p of humanPlayers) {
+          const key = p.originalId || p.id || p.name;
+          if (key && !waitSet.has(key)) {
+            waitSet.add(key);
+            stats[mode].waitingPlayers.push({
+              id: p.id,
+              name: p.name || '牌友',
+              avatar: p.avatar || '👑',
+              coins: typeof p.coins === 'number' ? p.coins : 0,
+            });
+          }
+        }
+      } else {
+        if (room.status === 'starting' || room.status === 'playing') {
+          stats[mode].activeTablesCount += 1;
+        }
+        stats[mode].playingCount += humanPlayers.length;
+      }
+    }
+
+    for (const [mode, st] of Object.entries(stats)) {
+      st.totalInScene = seenInScene.get(mode)?.size || 0;
+    }
+
+    return stats;
+  }
+
   public getAllPlayers(dbProfiles: Record<string, any> = {}): TeahousePlayerItem[] {
     const list: TeahousePlayerItem[] = [];
     const now = Date.now();
     const seenIds = new Set<string>();
+    const seatMap = this.getAuthoritativeSeatMap();
 
     // Map of active sockets keyed by playerId, playerName, or phone
     const activeSocketMap = new Map<string, ClientPresenceInfo>();
@@ -129,6 +243,22 @@ class PresenceTracker {
       if (client.playerName) activeSocketMap.set(client.playerName, client);
       if (client.phone) activeSocketMap.set(client.phone, client);
     }
+
+    const resolvePlayerLocation = (
+      pId: string,
+      activeSock?: ClientPresenceInfo
+    ): { gameType: GameType | 'lobby'; sceneMode: string } => {
+      const seatInfo =
+        seatMap.get(pId) ||
+        (activeSock?.socketId ? seatMap.get(`sock:${activeSock.socketId}`) : undefined);
+      if (seatInfo) {
+        return { gameType: seatInfo.gameType, sceneMode: seatInfo.sceneMode };
+      }
+      if (activeSock?.sceneMode === 'four-booking' || activeSock?.sceneMode === 'eight-booking') {
+        return { gameType: 'shisanshui', sceneMode: activeSock.sceneMode };
+      }
+      return { gameType: 'lobby', sceneMode: 'hall' };
+    };
 
     // 1. Process all registered profiles from database
     for (const [id, prof] of Object.entries(dbProfiles)) {
@@ -145,6 +275,7 @@ class PresenceTracker {
         (prof.name ? activeSocketMap.get(prof.name) : undefined);
       // 仅当用户拥有当前活跃的 WebSocket 连线且在心跳超时阈值内时，才判定为真正在线
       const isOnline = Boolean(activeSock && (now - (activeSock.lastSeen || 0) < 300000));
+      const loc = isOnline ? resolvePlayerLocation(pId, activeSock) : { gameType: 'lobby' as const, sceneMode: 'hall' };
 
       list.push({
         id: pId,
@@ -156,8 +287,8 @@ class PresenceTracker {
         phone: prof.phone ? `${String(prof.phone).slice(0, 3)}****${String(prof.phone).slice(-4)}` : undefined,
         isAdmin: !!prof.isAdmin,
         isOnline: isOnline,
-        gameType: activeSock ? activeSock.gameType : 'lobby',
-        sceneMode: activeSock ? (activeSock.sceneMode || 'hall') : 'hall',
+        gameType: loc.gameType,
+        sceneMode: loc.sceneMode,
         lastSeen: activeSock?.lastSeen || prof.updatedAt || prof.registeredAt || 0,
       });
     }
@@ -173,6 +304,7 @@ class PresenceTracker {
       if (!seenIds.has(cId) && !seenIds.has(cName)) {
         seenIds.add(cId);
         if (cName) seenIds.add(cName);
+        const loc = resolvePlayerLocation(cId, client);
         list.push({
           id: cId,
           name: cName,
@@ -182,8 +314,8 @@ class PresenceTracker {
           level: 1,
           phone: client.phone ? `${String(client.phone).slice(0, 3)}****${String(client.phone).slice(-4)}` : undefined,
           isOnline: true,
-          gameType: client.gameType || 'lobby',
-          sceneMode: client.sceneMode || 'hall',
+          gameType: loc.gameType,
+          sceneMode: loc.sceneMode,
           lastSeen: client.lastSeen || now,
         });
       }
@@ -209,6 +341,7 @@ class PresenceTracker {
       shisanshui: 0,
       mahjong: 0,
       totalOnline: 0,
+      sceneWaitingStats: this.getSceneWaitingStats(),
     };
 
     // Calculate total online
@@ -224,21 +357,13 @@ class PresenceTracker {
     for (const gt of targetGames) {
       const distinctUsers = new Set<string>();
 
-      // 1. Sockets currently located in this game
-      for (const [sId, c] of this.clients.entries()) {
-        if (c.gameType === gt) {
-          const userKey = c.playerId || c.playerName || `sock-${sId}`;
-          distinctUsers.add(userKey);
-        }
-      }
-
-      // 2. Active Scene Waiting Rooms for this game
+      // 1. Active Scene Waiting Rooms & Tables for this game (authoritative)
       if (this.sceneWaitingRoomsRef) {
         for (const room of this.sceneWaitingRoomsRef.values()) {
           if (room && room.gameType === gt && Array.isArray(room.players)) {
             for (const p of room.players) {
-              if (p && !p.isSimulated) {
-                const userKey = p.id || p.name;
+              if (p && !this.isBotPlayer(p)) {
+                const userKey = p.originalId || p.id || p.name;
                 if (userKey) distinctUsers.add(userKey);
               }
             }
@@ -246,17 +371,26 @@ class PresenceTracker {
         }
       }
 
+      // 2. Booking clients (non-waiting-room) in shisanshui
+      if (gt === 'shisanshui') {
+        for (const [sId, c] of this.clients.entries()) {
+          if (c.gameType === 'shisanshui' && (c.sceneMode === 'four-booking' || c.sceneMode === 'eight-booking')) {
+            const userKey = c.playerId || c.playerName || `sock-${sId}`;
+            distinctUsers.add(userKey);
+          }
+        }
+      }
+
       // 3. Active Playing Game Rooms for this game (excluding default static demo rooms)
       if (this.roomsRef) {
         for (const room of this.roomsRef.values()) {
-          // Exclude default placeholder demo rooms RM-202, RM-204, RM-205 from counting
           if (room.id === 'RM-202' || room.id === 'RM-204' || room.id === 'RM-205') {
             continue;
           }
           if (room && room.gameType === gt && Array.isArray(room.players)) {
             for (const p of room.players) {
-              if (p && !p.isSimulated && p.id && !p.id.startsWith('P-sim-')) {
-                const userKey = p.id || p.name;
+              if (p && !this.isBotPlayer(p) && p.id && !p.id.startsWith('P-sim-')) {
+                const userKey = p.originalId || p.id || p.name;
                 if (userKey) distinctUsers.add(userKey);
               }
             }

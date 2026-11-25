@@ -33,6 +33,13 @@ import {
   sortMahjongHand,
   isYiWuJiuMaTile,
 } from '../src/games/mahjong/aiWinEngine.ts';
+import {
+  filterHumanScenePlayers,
+  pickBestWaitingRoom,
+  isBotLikePlayer,
+  SceneWaitingRoom,
+} from '../src/server/realtimeTypes.ts';
+import { presenceTracker } from '../src/presenceTracker.ts';
 
 function yCard(rank: number, suit: '♠' | '♥' | '♣' | '♦'): YansanCard {
   const suitVal = suit === '♠' ? 4 : suit === '♥' ? 3 : suit === '♣' ? 2 : 1;
@@ -537,8 +544,119 @@ function runSanitizerTests() {
   assert.equal(maskedBoard.extraState.lastDrawnTile.hidden, true, 'Opponent drawn tile must be masked during play');
 }
 
+function runRealtimeHubTests() {
+  // 1. isBotLikePlayer and filterHumanScenePlayers
+  const mixedPlayers = [
+    { id: 'user-1', name: '真实玩家1', avatar: '👑', rating: 1800, coins: 2000, seat: 0 },
+    { id: 'sim-123-1', name: '人机1', avatar: '🤖', rating: 1800, coins: 2000, seat: 1, isSimulated: true },
+    { id: 'BOT-456', name: '人机2', avatar: '🤖', rating: 1800, coins: 2000, seat: 2, isAi: true },
+    { id: 'user-2', name: '真实玩家2', avatar: '👑', rating: 1850, coins: 3000, seat: 3 },
+  ];
+  assert.equal(isBotLikePlayer(mixedPlayers[0]), false);
+  assert.equal(isBotLikePlayer(mixedPlayers[1]), true);
+  assert.equal(isBotLikePlayer(mixedPlayers[2]), true);
+  assert.equal(isBotLikePlayer(mixedPlayers[3]), false);
+
+  const humanOnly = filterHumanScenePlayers(mixedPlayers);
+  assert.equal(humanOnly.length, 2, 'Bots must be cleanly filtered out');
+  assert.equal(humanOnly[0].id, 'user-1');
+  assert.equal(humanOnly[1].id, 'user-2');
+
+  // 2. pickBestWaitingRoom prioritization
+  const waitingRooms: SceneWaitingRoom[] = [
+    {
+      id: 'room-finished',
+      gameType: 'mahjong',
+      sceneMode: 'hongzhong-6',
+      sceneName: '红中6码场',
+      maxPlayers: 4,
+      players: [{ id: 'u1', name: 'U1', avatar: '👑', rating: 1800, coins: 2000, seat: 0 }],
+      status: 'finished',
+      createdAt: Date.now() - 10000,
+    },
+    {
+      id: 'room-empty',
+      gameType: 'mahjong',
+      sceneMode: 'hongzhong-6',
+      sceneName: '红中6码场',
+      maxPlayers: 4,
+      players: [],
+      status: 'waiting',
+      createdAt: Date.now() - 5000,
+    },
+    {
+      id: 'room-two-players',
+      gameType: 'mahjong',
+      sceneMode: 'hongzhong-6',
+      sceneName: '红中6码场',
+      maxPlayers: 4,
+      players: [
+        { id: 'u2', name: 'U2', avatar: '👑', rating: 1800, coins: 2000, seat: 0 },
+        { id: 'u3', name: 'U3', avatar: '👑', rating: 1800, coins: 2000, seat: 1 },
+      ],
+      status: 'waiting',
+      createdAt: Date.now() - 8000,
+    },
+    {
+      id: 'room-full',
+      gameType: 'mahjong',
+      sceneMode: 'hongzhong-6',
+      sceneName: '红中6码场',
+      maxPlayers: 4,
+      players: [
+        { id: 'p1', name: 'P1', avatar: '👑', rating: 1800, coins: 2000, seat: 0 },
+        { id: 'p2', name: 'P2', avatar: '👑', rating: 1800, coins: 2000, seat: 1 },
+        { id: 'p3', name: 'P3', avatar: '👑', rating: 1800, coins: 2000, seat: 2 },
+        { id: 'p4', name: 'P4', avatar: '👑', rating: 1800, coins: 2000, seat: 3 },
+      ],
+      status: 'waiting',
+      createdAt: Date.now() - 12000,
+    },
+  ];
+
+  const best = pickBestWaitingRoom(waitingRooms, 'mahjong', 'hongzhong-6');
+  assert(best, 'Must find a waiting room');
+  assert.equal(best.id, 'room-two-players', 'Must pick fullest waiting room with space left');
+
+  // 3. presenceTracker.getSceneWaitingStats accurately reflects scene status without bots
+  const testSceneMap = new Map<string, SceneWaitingRoom>();
+  testSceneMap.set('room-1', {
+    id: 'room-1',
+    gameType: 'mahjong',
+    sceneMode: 'hongzhong-6',
+    sceneName: '红中6码场',
+    maxPlayers: 4,
+    players: [
+      { id: 'real-1', name: '张三', avatar: '👑', rating: 1800, coins: 2000, seat: 0 },
+      { id: 'sim-bot-1', name: '人机1', avatar: '🤖', rating: 1800, coins: 2000, seat: 1, isSimulated: true },
+    ],
+    status: 'waiting',
+    createdAt: Date.now(),
+  });
+
+  presenceTracker.setReferences({ sceneWaitingRooms: testSceneMap });
+  const stats = presenceTracker.getSceneWaitingStats();
+  assert(stats['hongzhong-6'], 'hongzhong-6 stats must exist');
+  assert.equal(stats['hongzhong-6'].waitingCount, 1, 'Waiting count must be 1 (bot excluded)');
+  assert.equal(stats['hongzhong-6'].totalInScene, 1, 'Total in scene must be 1 (bot excluded)');
+  assert.equal(stats['hongzhong-6'].waitingPlayers.length, 1, 'Waiting players list must contain only human player');
+  assert.equal(stats['hongzhong-6'].waitingPlayers[0].name, '张三');
+
+  // Test getAllPlayers mapping with authoritative waiting room
+  presenceTracker.recordClient('sock-test-1', {
+    playerId: 'real-1',
+    playerName: '张三',
+    sceneMode: 'hall', // Client presence claims hall
+  });
+  const allPlayers = presenceTracker.getAllPlayers({});
+  const found = allPlayers.find((p) => p.id === 'real-1');
+  assert(found, 'Player must be found');
+  assert.equal(found.sceneMode, 'hongzhong-6', 'Authoritative waiting room sceneMode must override client hall');
+}
+
 runYansanTests();
 runShisanshuiTests();
 runMahjongTests();
 runSanitizerTests();
-console.log('✅ All rule engine regression tests passed (Yansan, Shisanshui, Booking, Mahjong, Sanitizers).');
+runRealtimeHubTests();
+console.log('✅ All rule engine regression tests passed (Yansan, Shisanshui, Booking, Mahjong, Sanitizers, RealtimeHub).');

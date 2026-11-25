@@ -322,40 +322,8 @@ const isOnlineMultiplayerRoom = computed(() => {
 
 function isSeatBot(absSeat: number): boolean {
   if (absSeat === mySeat.value) return false;
-  if (props.isPracticeMode) return true;
-  if (isOnlineMultiplayerRoom.value) {
-    const p = props.roomPlayers?.find((x: any) => x.seat === absSeat) || props.roomPlayers?.[absSeat];
-    if (!p) return false;
-    return Boolean(
-      p.isAi ||
-      p.isSimulated ||
-      p.isBot ||
-      p.id?.startsWith('BOT-') ||
-      p.id?.startsWith('sim-') ||
-      p.id?.startsWith('P-sim-')
-    );
-  }
-  if (!props.ws || props.ws.readyState !== WebSocket.OPEN) return true;
-  if (!props.roomPlayers || props.roomPlayers.length === 0) return true;
-  const p = props.roomPlayers.find((x: any) => x.seat === absSeat) || props.roomPlayers[absSeat];
-  if (!p) return true;
-  return Boolean(
-    p.isAi ||
-    p.isSimulated ||
-    p.isBot ||
-    p.isAutoManaged ||
-    p.isDisconnected ||
-    autoManagedSeats.value[absSeat] ||
-    disconnectedSeats.value[absSeat] ||
-    p.id?.startsWith('BOT-') ||
-    p.id?.startsWith('sim-') ||
-    p.id?.startsWith('P-sim-') ||
-    p.name?.includes('人机') ||
-    p.name?.includes('试玩') ||
-    p.name?.includes('南洋商贾') ||
-    p.name?.includes('九龙棋杰') ||
-    p.name?.includes('濠江赌客')
-  );
+  if (!props.isPracticeMode) return false;
+  return true;
 }
 
 function relToAbsSeat(relSeat: number): number {
@@ -556,23 +524,15 @@ function cleanDealingTimers() {
 }
 
 const isAllOtherPlayersBots = computed(() => {
-  if (props.isPracticeMode) return true;
-  if (isOnlineMultiplayerRoom.value) return false;
-  if (!props.ws || props.ws.readyState !== WebSocket.OPEN) return true;
-  if (!props.roomPlayers || props.roomPlayers.length === 0) return true;
-  return props.roomPlayers.every((p: any, idx: number) => {
-    if (idx === mySeat.value) return true;
-    return isSeatBot(idx);
-  });
+  return Boolean(props.isPracticeMode);
 });
 
 const hasClickedReady = ref(false);
 const readyPlayersCount = computed(() => {
-  if (isAllOtherPlayersBots.value) return 4;
+  if (props.isPracticeMode) return 4;
   if (!props.roomPlayers || props.roomPlayers.length === 0) return hasClickedReady.value ? 1 : 0;
   const count = props.roomPlayers.filter((p: any, idx: number) => {
     const pSeat = typeof p?.seat === 'number' ? p.seat : idx;
-    if (isSeatBot(pSeat)) return true;
     const isSelf =
       pSeat === mySeat.value ||
       (props.currentUser?.id && (p?.id === props.currentUser.id || p?.originalId === props.currentUser.id));
@@ -657,8 +617,7 @@ function startTurnCountdown() {
         checkAutoHostTurn();
       } else {
         const absSeat = relToAbsSeat(turnPlayer.value);
-        const isOnlineServerRoom = isOnlineMultiplayerRoom.value || (!props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN);
-        if (!isOnlineServerRoom && isSeatBot(absSeat)) {
+        if (props.isPracticeMode && isSeatBot(absSeat)) {
           botPlay(turnPlayer.value, () => passTurnToNext(turnPlayer.value));
         }
       }
@@ -1033,7 +992,7 @@ function handleLeaveToLobby() {
 function onRestartGame() {
   soundFX.playTap();
   cleanAllGameTimers();
-  if (props.isPracticeMode || isAllOtherPlayersBots.value) {
+  if (props.isPracticeMode) {
     stopSettlementCountdown();
     showSettlement.value = false;
     hasWon.value = false;
@@ -1500,7 +1459,23 @@ function dealNewMatch(designatedDealer?: number, forceReApply = false, dealOverr
     dealerSeat.value = targetDealer;
     dealerDice.value = currentDeal.dice || { d1: 1, d2: 1, sum: 2 };
   } else {
-    // Standard Mahjong: strictly 136 tiles in total (36 wan + 36 tiao + 36 tong + 28 zi)
+    // 联机纯真人模式严禁客户端本地洗牌发假牌与人机补位，向服务器请求权威发牌
+    if (!props.isPracticeMode) {
+      console.log('🛡️ [麻将联机纯真人] 等待服务端权威发牌，禁止本地离线随机发牌与人机补位');
+      if (props.ws && props.ws.readyState === WebSocket.OPEN && props.roomId) {
+        try {
+          props.ws.send(JSON.stringify({
+            type: 'request_game_deal',
+            roomId: props.roomId,
+            gameType: 'mahjong',
+            sceneMode: props.sceneMode,
+          }));
+        } catch {}
+      }
+      return;
+    }
+
+    // Standard Mahjong: strictly 136 tiles in total (36 wan + 36 tiao + 36 tong + 28 zi) - 仅限单机试玩
     wallPool = createTilePool();
 
     // 掷色子：
@@ -1726,8 +1701,7 @@ function finishDealingAndStartPlay() {
       : `👑 【${SEAT_NAMES[dealerSeat.value]}】是庄家，执 14 张牌率先出牌...`;
     drawTable();
     const dealerAbsSeat = relToAbsSeat(dealerSeat.value);
-    const isOnlineServerRoom = isOnlineMultiplayerRoom.value || (!props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN);
-    if (!isOnlineServerRoom && isSeatBot(dealerAbsSeat)) {
+    if (props.isPracticeMode && isSeatBot(dealerAbsSeat)) {
       const t = setTimeout(() => {
         botPlay(dealerSeat.value, () => passTurnToNext(dealerSeat.value));
       }, 950);
@@ -1791,8 +1765,7 @@ function skipDealingAnimation() {
       : `👑 【${SEAT_NAMES[dealerSeat.value]}】是庄家，执 14 张牌率先出牌...`;
     drawTable();
     const dealerAbsSeat = relToAbsSeat(dealerSeat.value);
-    const isOnlineServerRoom = isOnlineMultiplayerRoom.value || (!props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN);
-    if (!isOnlineServerRoom && isSeatBot(dealerAbsSeat)) {
+    if (props.isPracticeMode && isSeatBot(dealerAbsSeat)) {
       const t = setTimeout(() => {
         botPlay(dealerSeat.value, () => passTurnToNext(dealerSeat.value));
       }, 800);
@@ -2728,13 +2701,7 @@ function passTurnToNext(fromRelSeat: number) {
     drawTable();
     saveLocalSnapshot();
 
-    const isOnlineServerRoom = isOnlineMultiplayerRoom.value || (!props.isPracticeMode && props.ws && props.ws.readyState === WebSocket.OPEN);
-    if (!isOnlineServerRoom && isSeatBot(nextAbsSeat)) {
-      if (isSeatDisconnected(nextAbsSeat)) {
-        tipMessage.value = `🤖 【${SEAT_NAMES[nextRelSeat]}】 离线托管自动出牌中...`;
-      } else if (isSeatAutoManaged(nextAbsSeat)) {
-        tipMessage.value = `⚡ 【${SEAT_NAMES[nextRelSeat]}】 托管自动出牌中...`;
-      }
+    if (props.isPracticeMode && isSeatBot(nextAbsSeat)) {
       const thinkTime = Math.floor(400 + Math.random() * 400);
       const t = setTimeout(() => {
         if (hasWon.value || showSettlement.value || dealingPhase.value !== 'playing') return;
@@ -2758,6 +2725,7 @@ function passTurnToNext(fromRelSeat: number) {
 }
 
 function botPlay(seat: number, next: () => void) {
+  if (!props.isPracticeMode) return;
   if (hasWon.value || showSettlement.value || isDrawStalemate.value || dealingPhase.value !== 'playing') return;
   const botIdx = seat - 1; // 0=East, 1=North, 2=West
   const botHand = oppHands.value[botIdx] || [];
@@ -3803,7 +3771,30 @@ watch(() => props.ws, (newWs, oldWs) => {
     try { oldWs.removeEventListener('message', onWsMessage); } catch {}
   }
   if (newWs) {
-    try { newWs.addEventListener('message', onWsMessage); } catch {}
+    try {
+      newWs.removeEventListener('message', onWsMessage);
+      newWs.addEventListener('message', onWsMessage);
+    } catch {}
+    if (!props.isPracticeMode && hasClickedReady.value && (hasWon.value || isDrawStalemate.value || dealingPhase.value === 'settled')) {
+      const sendReady = () => {
+        try {
+          newWs.send(JSON.stringify({
+            type: 'scene_player_ready',
+            roomId: props.roomId,
+            playerId: props.currentUser?.id,
+            playerName: props.currentUser?.name,
+            gameType: 'mahjong',
+            sceneMode: props.sceneMode,
+            isReady: true,
+          }));
+        } catch {}
+      };
+      if (newWs.readyState === WebSocket.OPEN) {
+        sendReady();
+      } else {
+        newWs.addEventListener('open', sendReady, { once: true });
+      }
+    }
   }
 });
 

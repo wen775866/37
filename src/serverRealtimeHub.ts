@@ -10,6 +10,8 @@ import { generateRoomDeal } from './gameDeckService.ts';
 import { createDefaultBoardState, getSceneRequiredCoins } from './gameLogic/index.ts';
 import {
   isBotLikePlayer,
+  filterHumanScenePlayers,
+  pickBestWaitingRoom,
   SETTLEMENT_TIMEOUT_MS,
   type ActiveChallengeRecord,
   type AuthoritativeBoardState,
@@ -296,6 +298,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
   function startRoomGameIfFull(room: SceneWaitingRoom) {
     if (!room) return false;
 
+    const humanPlayers = filterHumanScenePlayers(room.players);
+    if (humanPlayers.length !== (room.players?.length || 0)) {
+      room.players = humanPlayers;
+    }
+
     if (!Array.isArray(room.players) || room.players.length < room.maxPlayers) {
       if (room.status !== 'waiting') {
         room.status = 'waiting';
@@ -308,8 +315,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
       return true;
     }
 
-    const validPlayers = room.players
-      .filter((p: any) => p && (p.id || p.name))
+    const validPlayers = humanPlayers
       .slice(0, room.maxPlayers)
       .sort((a: any, b: any) => {
         const sa = typeof a.seat === 'number' && a.seat >= 0 ? a.seat : 999;
@@ -317,13 +323,15 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
         return sa - sb;
       });
     if (validPlayers.length < room.maxPlayers) {
+      room.players = validPlayers;
       room.status = 'waiting';
+      delete (room as any).deal;
       return false;
     }
 
     validPlayers.forEach((pl: any, idx: number) => {
       pl.seat = idx;
-      pl.isReady = isBotLikePlayer(pl);
+      pl.isReady = false;
       delete (pl as any).isDisconnected;
       delete (pl as any).isAutoManaged;
       if (!pl.id) pl.id = `P-usr-${idx}-${Date.now().toString(36)}`;
@@ -459,6 +467,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
       }
     }, 1400);
 
+    broadcast({
+      type: 'presence_counts',
+      counts: presenceTracker.getRealGamePresence(),
+    });
+    broadcastTeahousePlayers();
     return true;
   }
 
@@ -517,7 +530,6 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
     ws.on('close', () => {
       presenceTracker.removeClient((ws as any).socketId);
-      broadcastTeahousePlayers();
       const sRoomId = (ws as any).sceneRoomId;
       const pId = (ws as any).scenePlayerId;
       let room = sRoomId ? sceneWaitingRooms.get(sRoomId) : undefined;
@@ -653,6 +665,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
         type: 'presence_counts',
         counts: presenceTracker.getRealGamePresence(),
       });
+      broadcastTeahousePlayers();
     });
 
     ws.on('message', async (data) => {
@@ -900,11 +913,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                 if (aPl) aPl.isReady = (pl as any).isReady;
               }
             }
-            room.players.forEach((p: any) => {
-              if (isBotLikePlayer(p)) {
-                p.isReady = true;
-              }
-            });
+            room.players = filterHumanScenePlayers(room.players);
 
             const readyCount = room.players.filter((p: any) => p.isReady).length;
             console.log(`🎮 [联机准备] 房间 ${room.id} (${room.gameType}) 玩家准备进度: ${readyCount}/${room.maxPlayers}`);
@@ -973,10 +982,12 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           }
           delete (p as any).isSimulated;
           delete (p as any).isAi;
+          delete (p as any).isBot;
 
           const reqCoins = getSceneRequiredCoins(gType, sMode);
           const currentCoins = typeof p.coins === 'number' && !isNaN(p.coins) ? p.coins : 0;
           if (currentCoins < reqCoins || currentCoins <= 0) {
+            presenceTracker.updateClientGame((ws as any).socketId, 'lobby', '');
             ws.send(
               JSON.stringify({
                 type: 'scene_join_rejected',
@@ -986,6 +997,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                 text: `您的积分不足 (${currentCoins}/${reqCoins} 分)，无法入座此分场！`,
               })
             );
+            broadcast({
+              type: 'presence_counts',
+              counts: presenceTracker.getRealGamePresence(),
+            });
+            broadcastTeahousePlayers();
             return;
           }
 
@@ -994,8 +1010,13 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             const isPlayerInOther = otherRoom.players.some(
               (pl) => (pl.id && p.id && pl.id === p.id) || (pl as any).socketId === currentSocketId
             );
-            if (isPlayerInOther && (otherRoom.gameType !== gType || otherRoom.sceneMode !== sMode)) {
-              if (otherRoom.status === 'playing' || otherRoom.status === 'starting') {
+            if (!isPlayerInOther) continue;
+
+            const isSameScene = otherRoom.gameType === gType && otherRoom.sceneMode === sMode;
+            const isOtherFinished = otherRoom.status === 'finished' || rooms.get(otherId)?.boardState?.phase === 'ended';
+
+            if (!isSameScene || isOtherFinished) {
+              if (!isOtherFinished && (otherRoom.status === 'playing' || otherRoom.status === 'starting')) {
                 const matchedOld = otherRoom.players.find(
                   (pl) => (pl.id && p.id && pl.id === p.id) || (pl as any).socketId === currentSocketId
                 );
@@ -1004,16 +1025,20 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
                   matchedOld.isAutoManaged = true;
                 }
               } else {
-                otherRoom.players = otherRoom.players.filter(
-                  (pl) => pl.id !== p.id && (pl as any).socketId !== currentSocketId
+                otherRoom.players = filterHumanScenePlayers(
+                  otherRoom.players.filter(
+                    (pl) => pl.id !== p.id && (pl as any).socketId !== currentSocketId
+                  )
                 );
                 if (otherRoom.players.length === 0) {
                   sceneWaitingRooms.delete(otherId);
+                  if (isOtherFinished) rooms.delete(otherId);
                 } else {
-                  otherRoom.players.forEach((pl, idx) => {
-                    pl.seat = idx;
-                  });
-                  if (otherRoom.status === 'waiting') {
+                  if (!isOtherFinished) {
+                    otherRoom.players.forEach((pl, idx) => {
+                      pl.seat = idx;
+                    });
+                    otherRoom.status = 'waiting';
                     broadcast({
                       type: 'scene_room_update',
                       roomId: otherRoom.id,
@@ -1031,7 +1056,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
           let room: SceneWaitingRoom | undefined;
           for (const r of sceneWaitingRooms.values()) {
-            if (r.gameType === gType && r.sceneMode === sMode) {
+            if (r.gameType === gType && r.sceneMode === sMode && (r.status === 'waiting' || r.status === 'starting' || r.status === 'playing')) {
               if (r.players.some((pl) => (pl as any).socketId === currentSocketId)) {
                 room = r;
                 break;
@@ -1041,7 +1066,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
 
           if (!room && p.id) {
             for (const r of sceneWaitingRooms.values()) {
-              if (r.gameType === gType && r.sceneMode === sMode && (r.status === 'waiting' || r.status === 'finished')) {
+              if (r.gameType === gType && r.sceneMode === sMode && r.status === 'waiting') {
                 const matchedPlayer = r.players.find((pl) => pl.id === p.id);
                 if (matchedPlayer) {
                   let oldSocketAlive = false;
@@ -1061,17 +1086,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           }
 
           if (!room) {
-            for (const r of sceneWaitingRooms.values()) {
-              if (
-                r.gameType === gType &&
-                r.sceneMode === sMode &&
-                r.players.length < r.maxPlayers &&
-                (r.status === 'waiting' || (r.status === 'finished' && r.players.length > 0 && r.players.every((pl: any) => pl.isReady)))
-              ) {
-                room = r;
-                break;
-              }
-            }
+            room = pickBestWaitingRoom(sceneWaitingRooms.values(), gType, sMode);
           }
 
           if (!room) {
@@ -1088,6 +1103,8 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             };
             sceneWaitingRooms.set(id, room);
           }
+
+          room.players = filterHumanScenePlayers(room.players);
 
           let existingIdx = room.players.findIndex((pl) => (pl as any).socketId === currentSocketId);
           if (existingIdx === -1 && p.id) {
@@ -1111,7 +1128,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             }
           }
 
-          if (existingIdx === -1 && (room.players.length >= room.maxPlayers || room.status === 'playing' || room.status === 'starting')) {
+          if (existingIdx === -1 && (room.players.length >= room.maxPlayers || room.status === 'playing' || room.status === 'starting' || room.status === 'finished')) {
             const newRoomId = `SCENE-${gType}-${sMode}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
             room = {
               id: newRoomId,
@@ -1145,8 +1162,8 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
           presenceTracker.updateClientGame((ws as any).socketId, gType, sMode);
           presenceTracker.recordClient((ws as any).socketId, {
             gameType: gType,
-            playerId: p.id,
-            playerName: p.name,
+            playerId: rawId || p.id,
+            playerName: p.originalName || p.name,
             sceneMode: sMode,
           });
 
@@ -1170,12 +1187,6 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             );
           } catch {}
 
-          broadcast({
-            type: 'presence_counts',
-            counts: presenceTracker.getRealGamePresence(),
-          });
-          broadcastTeahousePlayers();
-
           if (!isFullStarted) {
             room.status = 'waiting';
             delete (room as any).deal;
@@ -1194,6 +1205,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             type: 'presence_counts',
             counts: presenceTracker.getRealGamePresence(),
           });
+          broadcastTeahousePlayers();
           return;
         }
 
@@ -1292,6 +1304,10 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
               } else {
                 const wasFinishedSettlement = room.status === 'finished' || authRoom?.boardState?.phase === 'ended';
                 room.players = room.players.filter((pl) => pl !== leavingPl);
+                if ((ws as any).sceneRoomId === id) {
+                  delete (ws as any).sceneRoomId;
+                  delete (ws as any).scenePlayerId;
+                }
 
                 if (room.players.length === 0) {
                   sceneWaitingRooms.delete(id);
@@ -1380,6 +1396,7 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             type: 'presence_counts',
             counts: presenceTracker.getRealGamePresence(),
           });
+          broadcastTeahousePlayers();
           return;
         }
 
@@ -1944,6 +1961,11 @@ export function createRealtimeHub(wss: WebSocketServer): (payload: unknown) => v
             status: 'finished',
           });
         }
+        broadcast({
+          type: 'presence_counts',
+          counts: presenceTracker.getRealGamePresence(),
+        });
+        broadcastTeahousePlayers();
         continue;
       }
 

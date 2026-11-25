@@ -495,7 +495,7 @@
             :current-user="currentUserForTable"
             :room-id="activeRoomId"
             :initial-deal="currentRoomDeal"
-            :ws="ws"
+            :ws="wsRef"
             :is-practice-mode="isPracticeMode"
             @move="onGameMove"
             @restart="onGameRestart"
@@ -511,7 +511,7 @@
             :current-user="currentUserForTable"
             :room-id="activeRoomId"
             :initial-deal="currentRoomDeal"
-            :ws="ws"
+            :ws="wsRef"
             :is-practice-mode="isPracticeMode"
             @move="onGameMove"
             @restart="onGameRestart"
@@ -528,7 +528,7 @@
             :current-user="currentUserForTable"
             :room-id="activeRoomId"
             :initial-deal="currentRoomDeal"
-            :ws="ws"
+            :ws="wsRef"
             :is-practice-mode="isPracticeMode"
             @move="onGameMove"
             @restart="onGameRestart"
@@ -791,13 +791,16 @@
     <TeahouseChatroom
       v-else-if="currentView === 'chatroom'"
       :current-user="userProfile"
-      :ws="ws"
+      :ws="wsRef"
       :ws-connected="wsConnected"
       :active-game-type="activeGameType"
       :active-scene-mode="activeSceneMode"
       :active-scene-name="currentSceneDisplayName"
       :scene-counts="sceneCounts"
       :online-players="onlineTeahousePlayers"
+      :waiting-players="currentWaitingRoomPlayers"
+      :waiting-room-id="activeRoomId"
+      :scene-waiting-stats="sceneWaitingStats"
       @leave="returnToLobby"
       @change-scene="onChangeSceneFromChatroom"
       @select-scene="onSelectSceneFromChatroom"
@@ -815,7 +818,7 @@
       :base-stake="currentSceneBaseStake"
       :max-players="currentSceneMaxPlayers"
       :current-user="userProfile"
-      :ws="ws"
+      :ws="wsRef"
       :ws-connected="wsConnected"
       :table-theme="currentTheme"
       :is-rotated-90="isRotated90"
@@ -1133,7 +1136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount, shallowRef } from 'vue';
 import AuthModal from './components/AuthModal.vue';
 import PointsManageModal from './components/PointsManageModal.vue';
 import UserProfileModal from './components/UserProfileModal.vue';
@@ -1196,7 +1199,9 @@ const currentSvgIndex = ref(0);
 let svgTimer: number | null = null;
 let presenceInterval: any = null;
 
-function updateRealPresence(data: { yansan?: number; shisanshui?: number; mahjong?: number }) {
+const sceneWaitingStats = ref<Record<string, any>>({});
+
+function updateRealPresence(data: { yansan?: number; shisanshui?: number; mahjong?: number; sceneWaitingStats?: Record<string, any> }) {
   if (!data) return;
   const yansanMod = GAME_MODULES.find(g => g.id === 'yansan');
   const shisanshuiMod = GAME_MODULES.find(g => g.id === 'shisanshui');
@@ -1204,6 +1209,9 @@ function updateRealPresence(data: { yansan?: number; shisanshui?: number; mahjon
   if (yansanMod && typeof data.yansan === 'number') yansanMod.onlinePlayers = Math.max(0, data.yansan);
   if (shisanshuiMod && typeof data.shisanshui === 'number') shisanshuiMod.onlinePlayers = Math.max(0, data.shisanshui);
   if (mahjongMod && typeof data.mahjong === 'number') mahjongMod.onlinePlayers = Math.max(0, data.mahjong);
+  if (data.sceneWaitingStats && typeof data.sceneWaitingStats === 'object') {
+    sceneWaitingStats.value = data.sceneWaitingStats;
+  }
 }
 
 async function fetchRealPresence() {
@@ -1267,7 +1275,7 @@ const recentVoicedHistory = reactive<VoicedHistoryItem[]>([]);
 const currentView = ref<'lobby' | 'arena' | 'mahjong-scenes' | 'shisanshui-scenes' | 'yansan-scenes' | 'waiting-room' | 'chatroom'>('lobby');
 const hasSelectedScene = ref(false);
 const activeGameType = ref<GameType | ''>('');
-const activeRoomId = ref('RM-202');
+const activeRoomId = ref('');
 const activeMahjongScene = ref<MahjongSceneMode>('hongzhong-6');
 const activeShisanshuiScene = ref<ShisanshuiSceneMode>('four-realtime');
 const activeYansanScene = ref<YansanSceneMode>('yansan-5-10');
@@ -1301,18 +1309,21 @@ const sceneCounts = computed<Record<string, number>>(() => {
     'standard-10': 0,
   };
 
-  const list = onlineTeahousePlayers.value || [];
-  for (const p of list) {
-    if (p && p.sceneMode && p.sceneMode !== 'hall' && p.sceneMode !== 'lobby' && p.sceneMode !== 'none' && p.sceneMode !== '') {
-      counts[p.sceneMode] = (counts[p.sceneMode] || 0) + 1;
+  const statsMap = sceneWaitingStats.value || {};
+  const hasStats = Object.keys(statsMap).length > 0;
+  for (const [mode, st] of Object.entries(statsMap)) {
+    if (st && typeof st.totalInScene === 'number') {
+      counts[mode] = Math.max(0, st.totalInScene);
     }
   }
 
-  // Also include players in current room if present
-  if (activeSceneMode.value && activeSceneMode.value !== 'hall' && activeSceneMode.value !== 'lobby' && activeSceneMode.value !== '') {
-    const activeWaitingCount = currentWaitingRoomPlayers.value.filter(p => !p.isSimulated).length;
-    if (activeWaitingCount > 0) {
-      counts[activeSceneMode.value] = Math.max(counts[activeSceneMode.value] || 0, activeWaitingCount);
+  const list = onlineTeahousePlayers.value || [];
+  for (const p of list) {
+    if (p && p.sceneMode && p.sceneMode !== 'hall' && p.sceneMode !== 'lobby' && p.sceneMode !== 'none' && p.sceneMode !== '') {
+      // 非预约实时场以服务端 sceneWaitingStats 权威队列统计为准，防止断连或未入座玩家虚高占位
+      if (!hasStats || p.sceneMode === 'four-booking' || p.sceneMode === 'eight-booking') {
+        counts[p.sceneMode] = (counts[p.sceneMode] || 0) + 1;
+      }
     }
   }
 
@@ -1379,9 +1390,9 @@ const onlineTeahousePlayers = computed(() => {
     }
   }
 
-  // 3. 同步当前匹配等候室同席真人玩家（若有入座，更新席位与在线状态）
+  // 3. 同步当前匹配等候室同席真人玩家（若有入座，更新席位与在线状态；严禁人机计入）
   for (const p of currentWaitingRoomPlayers.value) {
-    if (!p.isSimulated && p.id !== myId) {
+    if (!p.isSimulated && !(p as any).isAi && !(p as any).isBot && p.id !== myId) {
       const match = list.find(item => item.id === p.id || item.name === p.name);
       if (match) {
         match.isOnline = true;
@@ -1889,6 +1900,7 @@ function triggerSmoothReconnectBadge() {
 }
 
 let ws: WebSocket | null = null;
+const wsRef = shallowRef<WebSocket | null>(null);
 let pingInterval: any = null;
 let sessionCheckInterval: any = null;
 const serverSettledRooms = new Map<string, { coins: number; delta: number; ts: number }>();
@@ -1931,7 +1943,8 @@ const activeModuleInfo = computed(() => {
 });
 
 const activeRoom = computed(() => {
-  return rooms.value.find((r) => r.id === activeRoomId.value) || rooms.value.find((r) => r.gameType === activeGameType.value) || rooms.value[0] || null;
+  if (!activeRoomId.value) return null;
+  return rooms.value.find((r) => r.id === activeRoomId.value) || null;
 });
 
 const activeChatList = computed(() => {
@@ -2115,6 +2128,9 @@ function onChangeSceneFromChatroom() {
       }));
     } catch {}
   }
+  activeRoomId.value = '';
+  currentWaitingRoomPlayers.value = [];
+  currentRoomDeal.value = null;
   if (activeGameType.value === 'mahjong') currentView.value = 'mahjong-scenes';
   else if (activeGameType.value === 'shisanshui') currentView.value = 'shisanshui-scenes';
   else if (activeGameType.value === 'yansan') currentView.value = 'yansan-scenes';
@@ -2137,8 +2153,13 @@ function onSelectSceneFromChatroom(gt: string, mode: string) {
       } catch {}
     }
     hasSelectedScene.value = false;
+    activeRoomId.value = '';
     activeGameType.value = '';
     activeSceneMode.value = '';
+    currentWaitingRoomPlayers.value = [];
+    currentRoomDeal.value = null;
+    myAssignedPlayerId.value = '';
+    myAssignedSeat.value = null;
     notifyPresence('lobby', '');
     return;
   }
@@ -2153,6 +2174,7 @@ function onSelectSceneFromChatroom(gt: string, mode: string) {
 }
 
 function sendSceneJoinOverWs(gt: string, mode: string) {
+  activeRoomId.value = '';
   myAssignedPlayerId.value = '';
   myAssignedSeat.value = null;
   currentRoomDeal.value = null;
@@ -2273,6 +2295,9 @@ function onChangeSceneFromWaitingRoom() {
       }));
     } catch {}
   }
+  activeRoomId.value = '';
+  currentWaitingRoomPlayers.value = [];
+  currentRoomDeal.value = null;
   if (activeGameType.value === 'mahjong') currentView.value = 'mahjong-scenes';
   else if (activeGameType.value === 'shisanshui') currentView.value = 'shisanshui-scenes';
   else currentView.value = 'yansan-scenes';
@@ -2280,15 +2305,16 @@ function onChangeSceneFromWaitingRoom() {
 }
 
 function onFullSeatGameStart(players: ScenePlayer[], roomId?: string, deal?: any) {
+  const isBookingLaunch = Boolean(activeSceneMode.value && activeSceneMode.value.includes('booking'));
+  if (!isPracticeMode.value && !isBookingLaunch && !deal && !currentRoomDeal.value) {
+    return;
+  }
   currentWaitingRoomPlayers.value = players;
   if (!isPracticeMode.value) {
     isPracticeMode.value = false;
   }
   if (roomId) {
     activeRoomId.value = roomId;
-  } else {
-    const match = rooms.value.find((r) => r.gameType === activeGameType.value);
-    if (match) activeRoomId.value = match.id;
   }
   if (deal) {
     currentRoomDeal.value = deal;
@@ -2496,6 +2522,7 @@ function returnToLobby(forceExit: boolean | any = false) {
   showChatDrawer.value = false;
   isPracticeMode.value = false;
   hasSelectedScene.value = false;
+  activeRoomId.value = '';
   activeGameType.value = '';
   activeSceneMode.value = '';
   currentWaitingRoomPlayers.value = [];
@@ -2518,10 +2545,12 @@ function connectWs() {
       ws.close();
     } catch {}
     ws = null;
+    wsRef.value = null;
   }
   const wsUrl = getWebSocketUrl();
   try {
     ws = new WebSocket(wsUrl);
+    wsRef.value = ws;
   } catch (err) {
     console.warn('[WebSocket Init Error]', err);
     return;
@@ -2558,6 +2587,17 @@ function connectWs() {
         playerName: userProfile.name,
       }));
       addPacketLog('OUT', `SCENE_RECONNECT_AUTO: ${targetRoomId}`);
+    } else if (
+      !isPracticeMode.value &&
+      (currentView.value === 'chatroom' || currentView.value === 'waiting-room') &&
+      hasSelectedScene.value &&
+      activeGameType.value &&
+      activeSceneMode.value &&
+      !activeSceneMode.value.includes('booking')
+    ) {
+      // 在等待队列中若之前未入列或重连，立即重新发起 scene_join 与服务端对齐真实席位
+      sendSceneJoinOverWs(activeGameType.value, activeSceneMode.value);
+      addPacketLog('OUT', `SCENE_JOIN_SYNC: ${activeGameType.value}/${activeSceneMode.value}`);
     }
   };
 
@@ -2592,6 +2632,7 @@ function connectWs() {
           serverRegisteredPlayers.value = msg.players;
         }
       } else if (msg.type === 'scene_join_rejected') {
+        activeRoomId.value = '';
         promptInsufficientCoins(activeGameType.value, activeSceneMode.value, msg.requiredCoins || 100);
         returnToLobby();
       } else if (msg.type === 'room_join_rejected') {
@@ -2658,9 +2699,13 @@ function connectWs() {
           }
           isPracticeMode.value = false;
           currentTheme.value = getGameTheme(activeGameType.value);
-          saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal);
-          if (currentView.value !== 'arena') {
-            currentView.value = 'arena';
+          if (msg.room.status === 'waiting') {
+            clearActiveGameLock();
+          } else if (msg.deal || currentRoomDeal.value) {
+            saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal || currentRoomDeal.value);
+            if (currentView.value !== 'arena') {
+              currentView.value = 'arena';
+            }
           }
         } else {
           if (activeRoomId.value) {
@@ -2669,9 +2714,18 @@ function connectWs() {
             } catch {}
           }
           clearActiveGameLock();
+          activeRoomId.value = '';
           if (currentView.value === 'arena' && !isPracticeMode.value) {
             returnToLobby(true);
             triggerSpeechBubble('⏱️ 当前牌桌已结束或结算超时，已自动返回大厅');
+          } else if (
+            (currentView.value === 'chatroom' || currentView.value === 'waiting-room') &&
+            hasSelectedScene.value &&
+            activeGameType.value &&
+            activeSceneMode.value &&
+            !activeSceneMode.value.includes('booking')
+          ) {
+            sendSceneJoinOverWs(activeGameType.value, activeSceneMode.value);
           }
         }
       } else if (msg.type === 'scene_room_update') {
@@ -2703,10 +2757,11 @@ function connectWs() {
             const targetGame = msg.gameType || activeGameType.value;
             const targetMode = msg.sceneMode || activeSceneMode.value;
             const maxP = msg.maxPlayers || ((targetGame === 'shisanshui' && targetMode?.includes('eight')) ? 8 : 4);
+            const hasAuthoritativeDeal = Boolean(msg.deal || currentRoomDeal.value);
 
-            if (msg.players.length >= maxP) {
+            if (msg.players.length >= maxP && hasAuthoritativeDeal) {
               currentTheme.value = getGameTheme(activeGameType.value);
-              saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal);
+              saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal || currentRoomDeal.value);
               if (msg.roomId) {
                 const matchRoom = rooms.value.find((r) => r.id === msg.roomId);
                 if (!matchRoom) {
@@ -2759,9 +2814,10 @@ function connectWs() {
         const targetGame = msg.gameType || activeGameType.value;
         const targetMode = msg.sceneMode || activeSceneMode.value;
         const maxP = msg.maxPlayers || ((targetGame === 'shisanshui' && targetMode?.includes('eight')) ? 8 : 4);
-        if (Array.isArray(msg.players) && msg.players.length >= maxP) {
+        const hasAuthoritativeDeal = Boolean(msg.deal || currentRoomDeal.value);
+        if (Array.isArray(msg.players) && msg.players.length >= maxP && hasAuthoritativeDeal) {
           currentTheme.value = getGameTheme(activeGameType.value);
-          saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal);
+          saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal || currentRoomDeal.value);
           if (currentView.value !== 'arena') {
             currentView.value = 'arena';
             soundFX.playVictory?.();
@@ -2976,6 +3032,7 @@ function connectWs() {
 
   ws.onclose = () => {
     wsConnected.value = false;
+    wsRef.value = null;
     addPacketLog('IN', 'WS_DISCONNECTED');
     startReconnectCountdown();
   };
@@ -3316,8 +3373,8 @@ function cancelVoiceRecording() {
 }
 
 function sendVoiceBroadcastMessage(audioDataUrl: string, duration: number) {
-  const roomId = activeRoomId.value || 'RM-202';
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  const roomId = activeRoomId.value;
+  if (ws && ws.readyState === WebSocket.OPEN && roomId) {
     ws.send(
       JSON.stringify({
         type: 'game_chat',
@@ -3709,6 +3766,24 @@ function onVisibilityChange() {
           playerName: userProfile.name,
         }));
         addPacketLog('OUT', `WAKE_SCENE_RECONNECT: ${activeRoomId.value}`);
+      } else if (
+        !isPracticeMode.value &&
+        currentView.value === 'chatroom' &&
+        hasSelectedScene.value &&
+        activeGameType.value &&
+        activeSceneMode.value &&
+        !activeSceneMode.value.includes('booking')
+      ) {
+        if (activeRoomId.value) {
+          ws.send(JSON.stringify({
+            type: 'scene_reconnect',
+            roomId: activeRoomId.value,
+            playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
+            playerName: userProfile.name,
+          }));
+        } else {
+          sendSceneJoinOverWs(activeGameType.value, activeSceneMode.value);
+        }
       }
     }
   }
@@ -3810,6 +3885,8 @@ onBeforeUnmount(() => {
     window.removeEventListener('offline', onBrowserOffline);
   }
   ws?.close();
+  ws = null;
+  wsRef.value = null;
 });
 </script>
 

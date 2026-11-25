@@ -1041,6 +1041,9 @@ const props = defineProps<{
   activeSceneName?: string | null;
   sceneCounts: Record<string, number>;
   onlinePlayers: any[];
+  waitingPlayers?: ScenePlayer[];
+  waitingRoomId?: string;
+  sceneWaitingStats?: Record<string, any>;
 }>();
 
 const emit = defineEmits<{
@@ -1175,12 +1178,25 @@ const activeTableCount = computed(() => {
   if (currentPlayers.value && currentPlayers.value.length > 0) {
     return Math.min(currentSceneMax.value, currentPlayers.value.length);
   }
+  if (props.waitingPlayers && props.waitingPlayers.length > 0) {
+    return Math.min(currentSceneMax.value, props.waitingPlayers.length);
+  }
+  if (props.activeSceneMode && props.sceneWaitingStats?.[props.activeSceneMode]) {
+    const w = props.sceneWaitingStats[props.activeSceneMode].waitingCount;
+    if (typeof w === 'number' && w > 0) {
+      return Math.min(currentSceneMax.value, w);
+    }
+  }
   return 1;
 });
 
 const activeSceneCount = computed(() => {
   if (!hasJoinedScene.value || !props.activeSceneMode) return 0;
-  return props.sceneCounts[props.activeSceneMode] || 0;
+  const statTotal = props.sceneWaitingStats?.[props.activeSceneMode]?.totalInScene;
+  if (typeof statTotal === 'number') {
+    return Math.max(activeTableCount.value, statTotal);
+  }
+  return Math.max(activeTableCount.value, props.sceneCounts[props.activeSceneMode] || 0);
 });
 
 function formatSceneSeatDisplay(count: number, maxP: number = 4): string {
@@ -1239,10 +1255,35 @@ const ALL_SCENE_DEFINITIONS: SceneOverviewItem[] = [
 
 const allSceneListWithStats = computed(() => {
   const onlineList = props.onlinePlayers || [];
+  const statsMap = props.sceneWaitingStats || {};
+
   return ALL_SCENE_DEFINITIONS.map((s) => {
+    const st = statsMap[s.mode];
     const playersInThisScene = onlineList.filter((p: any) => p.sceneMode === s.mode && p.isOnline !== false);
-    const count = Math.max(props.sceneCounts[s.mode] || 0, playersInThisScene.length);
-    
+
+    let count = 0;
+    let scenePlayers: any[] = [];
+    if (st && typeof st.totalInScene === 'number') {
+      count = st.totalInScene;
+      if (Array.isArray(st.waitingPlayers) && st.waitingPlayers.length > 0) {
+        scenePlayers = st.waitingPlayers;
+      } else {
+        scenePlayers = playersInThisScene;
+      }
+    } else {
+      count = Math.max(props.sceneCounts[s.mode] || 0, playersInThisScene.length);
+      scenePlayers = playersInThisScene;
+    }
+
+    if (props.activeSceneMode === s.mode) {
+      count = Math.max(count, activeTableCount.value);
+      if (currentPlayers.value.length > 0) {
+        scenePlayers = currentPlayers.value;
+      } else if (props.waitingPlayers && props.waitingPlayers.length > 0) {
+        scenePlayers = props.waitingPlayers;
+      }
+    }
+
     let statusText = '虚位以待';
     let statusBadgeClass = 'bg-emerald-500/10 text-emerald-800 border-emerald-300';
     if (count >= s.max) {
@@ -1256,7 +1297,7 @@ const allSceneListWithStats = computed(() => {
     return {
       ...s,
       count,
-      players: playersInThisScene,
+      players: scenePlayers,
       statusText,
       statusBadgeClass,
     };
@@ -1704,6 +1745,9 @@ function clearChatMessages() {
 function launchGameNow(dealOverride?: any) {
   if (!hasJoinedScene.value) return;
   const dealToUse = dealOverride || currentRoomDeal.value;
+  if (!dealToUse && !props.activeSceneMode?.includes('booking')) {
+    return;
+  }
   if (dealToUse) {
     currentRoomDeal.value = dealToUse;
   }
@@ -1959,7 +2003,8 @@ function handleWsMessage(event: MessageEvent) {
         if (Array.isArray(msg.players)) {
           const targetMax = (props.activeGameType === 'shisanshui' && props.activeSceneMode?.includes('eight')) ? 8 : 4;
           currentPlayers.value = msg.players.slice(0, targetMax);
-          if (msg.type === 'scene_room_full' || msg.type === 'scene_room_started' || currentPlayers.value.length >= targetMax) {
+          const hasAuthoritativeDeal = Boolean(msg.deal || currentRoomDeal.value || props.activeSceneMode?.includes('booking'));
+          if (hasAuthoritativeDeal && (msg.type === 'scene_room_full' || msg.type === 'scene_room_started' || currentPlayers.value.length >= targetMax)) {
             launchGameNow(msg.deal);
           }
         }
@@ -2084,6 +2129,44 @@ watch(() => props.ws, (newWs, oldWs) => {
     } catch {}
   }
 });
+
+watch(
+  () => props.waitingPlayers,
+  (newPlayers) => {
+    if (Array.isArray(newPlayers) && newPlayers.length > 0) {
+      currentPlayers.value = [...newPlayers];
+    } else if (!props.activeSceneMode) {
+      currentPlayers.value = [];
+    }
+  },
+  { immediate: true, deep: true }
+);
+
+watch(
+  () => props.waitingRoomId,
+  (newId) => {
+    if (newId) {
+      currentRoomId.value = newId;
+    } else if (!props.activeSceneMode) {
+      currentRoomId.value = '';
+    }
+  },
+  { immediate: true }
+);
+
+watch(
+  () => props.activeSceneMode,
+  (newMode, oldMode) => {
+    if (newMode !== oldMode) {
+      isStarting.value = false;
+      currentRoomDeal.value = null;
+      if (!newMode) {
+        currentPlayers.value = [];
+        currentRoomId.value = '';
+      }
+    }
+  }
+);
 
 onMounted(() => {
   if (props.ws) {

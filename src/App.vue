@@ -2733,12 +2733,27 @@ const GAME_LOCK_KEY = 'app_active_game_lock';
 function saveActiveGameLock(roomId: string, gameType: string, sceneMode: string, deal?: any) {
   if (!roomId || !gameType || !sceneMode || isPracticeMode.value) return;
   try {
+    const compactPlayers = Array.isArray(currentWaitingRoomPlayers.value)
+      ? currentWaitingRoomPlayers.value.map((p: any) => ({
+          id: p.id,
+          originalId: p.originalId,
+          name: p.name,
+          avatar: p.avatar,
+          seat: p.seat,
+          rating: p.rating,
+          isAi: Boolean(p.isAi),
+          isReady: Boolean(p.isReady),
+        }))
+      : [];
     const lock = {
       roomId,
       gameType,
       sceneMode,
       playerId: userProfile.id,
+      assignedPlayerId: myAssignedPlayerId.value || userProfile.id,
+      assignedSeat: myAssignedSeat.value,
       playerName: userProfile.name,
+      roomPlayers: compactPlayers,
       timestamp: Date.now(),
     };
     localStorage.setItem(GAME_LOCK_KEY, JSON.stringify(lock));
@@ -2790,6 +2805,11 @@ function returnToLobby(forceExit: boolean | any = false) {
         playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
+    } catch {}
+  }
+  if (activeRoomId.value) {
+    try {
+      localStorage.removeItem(`mahjong_table_snapshot_${activeRoomId.value}`);
     } catch {}
   }
   clearActiveGameLock();
@@ -2855,7 +2875,7 @@ function connectWs() {
       ws.send(JSON.stringify({
         type: 'scene_reconnect',
         roomId: targetRoomId,
-        playerId: myAssignedPlayerId.value || userProfile.id || 'P-me',
+        playerId: myAssignedPlayerId.value || currentLock?.assignedPlayerId || userProfile.id || 'P-me',
         playerName: userProfile.name,
       }));
       addPacketLog('OUT', `SCENE_RECONNECT_AUTO: ${targetRoomId}`);
@@ -2932,16 +2952,48 @@ function connectWs() {
           if (msg.deal) {
             currentRoomDeal.value = msg.deal;
           }
+          if (msg.room.id) {
+            const existingIdx = rooms.value.findIndex((r) => r.id === msg.room.id);
+            const roomPatch = {
+              id: msg.room.id,
+              title: `${getSceneDisplayName(activeGameType.value, activeSceneMode.value)} · 纯真人争霸局`,
+              gameType: activeGameType.value,
+              status: msg.room.status || 'playing',
+              players: currentWaitingRoomPlayers.value,
+              spectators: 0,
+              turnSeat: msg.boardState?.turnSeat ?? msg.deal?.starterSeat ?? 0,
+              moveCount: msg.boardState?.moveCount ?? 0,
+              deal: msg.deal || currentRoomDeal.value,
+              modeLabel: `${getSceneDisplayName(activeGameType.value, activeSceneMode.value)} · 实时对决`,
+              chat: existingIdx !== -1 ? rooms.value[existingIdx].chat || [] : [],
+              boardState: msg.boardState || null,
+            } as any;
+            if (existingIdx !== -1) {
+              rooms.value[existingIdx] = { ...rooms.value[existingIdx], ...roomPatch };
+            } else {
+              rooms.value.unshift(roomPatch);
+            }
+          }
           if (msg.boardState && activeRoom.value) {
             activeRoom.value.boardState = msg.boardState;
           }
           isPracticeMode.value = false;
+          currentTheme.value = getGameTheme(activeGameType.value);
           saveActiveGameLock(activeRoomId.value, activeGameType.value, activeSceneMode.value, msg.deal);
           if (currentView.value !== 'arena') {
             currentView.value = 'arena';
           }
         } else {
+          if (activeRoomId.value) {
+            try {
+              localStorage.removeItem(`mahjong_table_snapshot_${activeRoomId.value}`);
+            } catch {}
+          }
           clearActiveGameLock();
+          if (currentView.value === 'arena' && !isPracticeMode.value) {
+            returnToLobby(true);
+            triggerSpeechBubble('⏱️ 当前牌桌已结束或结算超时，已自动返回大厅');
+          }
         }
       } else if (msg.type === 'scene_room_update') {
         if (isPracticeMode.value) return;
@@ -3004,6 +3056,21 @@ function connectWs() {
                 currentView.value = 'arena';
                 soundFX.playVictory?.();
               }
+            } else if (
+              msg.status === 'waiting' &&
+              msg.players.length < maxP &&
+              currentView.value === 'arena' &&
+              matchedUpdateSelf?.isReady
+            ) {
+              if (msg.roomId) {
+                try {
+                  localStorage.removeItem(`mahjong_table_snapshot_${msg.roomId}`);
+                } catch {}
+              }
+              clearActiveGameLock();
+              currentRoomDeal.value = null;
+              currentView.value = 'waiting-room';
+              triggerSpeechBubble('⏱️ 部分牌友已离开或结算超时，已回到备战席等待新牌友');
             }
           }
       } else if (msg.type === 'scene_join_ack') {
@@ -3119,6 +3186,23 @@ function connectWs() {
       } else if (msg.type === 'game_event') {
         if (msg.boardState && activeRoom.value && activeRoom.value.id === msg.roomId) {
           activeRoom.value.boardState = msg.boardState;
+        }
+      } else if (msg.type === 'settlement_timeout') {
+        if (isPracticeMode.value) return;
+        const isTargetRoom = !msg.roomId || !activeRoomId.value || msg.roomId === activeRoomId.value;
+        const myIds = [myAssignedPlayerId.value, userProfile.id].filter(Boolean);
+        const isTimedOutMe =
+          !Array.isArray(msg.timedOutPlayerIds) ||
+          msg.timedOutPlayerIds.length === 0 ||
+          myIds.some((id) => msg.timedOutPlayerIds.includes(id));
+        if (isTargetRoom && isTimedOutMe && currentView.value === 'arena') {
+          if (msg.roomId) {
+            try {
+              localStorage.removeItem(`mahjong_table_snapshot_${msg.roomId}`);
+            } catch {}
+          }
+          returnToLobby(true);
+          triggerSpeechBubble(`⏱️ ${msg.message || '结算超时未点击继续下一局，已自动返回大厅'}`);
         }
       } else if (msg.type === 'chat_broadcast') {
         if (activeRoom.value) {
@@ -3967,12 +4051,21 @@ function onBrowserOffline() {
 }
 
 onMounted(() => {
-  // 校验是否存在对局锁定 (防止刷页面脱离牌局)
+  // 校验是否存在对局锁定 (防止刷页面脱离牌局或结算页面)
   const existingLock = getActiveGameLock();
   if (existingLock) {
     activeRoomId.value = existingLock.roomId;
     activeGameType.value = existingLock.gameType;
     activeSceneMode.value = existingLock.sceneMode;
+    if (existingLock.assignedPlayerId) {
+      myAssignedPlayerId.value = existingLock.assignedPlayerId;
+    }
+    if (typeof existingLock.assignedSeat === 'number') {
+      myAssignedSeat.value = existingLock.assignedSeat;
+    }
+    if (Array.isArray(existingLock.roomPlayers) && existingLock.roomPlayers.length > 0) {
+      currentWaitingRoomPlayers.value = existingLock.roomPlayers;
+    }
     hasSelectedScene.value = true;
     isPracticeMode.value = false;
     if (existingLock.gameType === 'yansan') activeYansanScene.value = existingLock.sceneMode as any;
@@ -3980,7 +4073,7 @@ onMounted(() => {
     if (existingLock.gameType === 'mahjong') activeMahjongScene.value = existingLock.sceneMode as any;
     currentTheme.value = getGameTheme(existingLock.gameType);
     currentView.value = 'arena';
-    console.log('🔒 [对局锁定恢复] 页面刷新重载，自动强行回到进行中的对局！', existingLock);
+    console.log('🔒 [对局锁定恢复] 页面刷新重载，自动回到对局/结算页面！', existingLock);
   }
 
   try {

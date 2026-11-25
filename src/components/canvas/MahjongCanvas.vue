@@ -207,7 +207,7 @@
                   <h3 class="text-sm sm:text-base md:text-lg font-black text-[#8B2516] font-serif-title tracking-wide leading-none">
                     {{ winningBreakdown.isFourHongzhong
                       ? '四张红中 · 天降大满贯！'
-                      : (winningBreakdown.winnerSeat === 0 ? '自摸和牌 · 雀圣大捷！' : `【${SEAT_NAMES[winningBreakdown.winnerSeat ?? 0]}】自摸和牌`) }}
+                      : (winningBreakdown.winnerSeat === 0 ? '自摸和牌 · 雀圣大捷！' : `【${settledWinnerLabel}】自摸和牌`) }}
                   </h3>
                   <span
                     class="px-1.5 py-0.2 rounded text-[10px] sm:text-xs font-bold leading-none"
@@ -217,7 +217,7 @@
                   </span>
                 </div>
                 <p class="text-[11px] sm:text-xs text-[#6B5744] font-medium mt-0.5 leading-tight">
-                  底分 10 分 · 下局由自摸者【{{ SEAT_NAMES[winningBreakdown.winnerSeat ?? (lastWinnerSeat ?? dealerSeat)] }}】坐庄率先出牌
+                  底分 10 分 · 下局由自摸者【{{ settledWinnerLabel }}】坐庄率先出牌
                 </p>
               </div>
             </div>
@@ -258,17 +258,17 @@
             <div class="flex items-center justify-between text-[11px] sm:text-xs text-[#78350F] font-bold font-serif-title leading-tight">
               <span class="flex items-center gap-1">
                 <span>🀄</span>
-                <span>【{{ SEAT_NAMES[winningBreakdown.winnerSeat ?? 0] }}】胡牌手牌与亮副全貌</span>
+                <span>【{{ settledWinnerLabel }}】胡牌手牌与亮副全貌</span>
               </span>
               <span class="text-[#78695C] font-mono text-[10px]">
-                共 {{ ((winningBreakdown.winnerSeat ?? 0) === 0 ? myHand.length : (oppHands[(winningBreakdown.winnerSeat ?? 1) - 1]?.length || 0)) + (((winningBreakdown.winnerSeat ?? 0) === 0 ? meldedTiles : (oppMelds[(winningBreakdown.winnerSeat ?? 1) - 1] || [])).length * 3) }} 张
+                共 {{ settledWinningHand.length + (settledWinningMelds.length * 3) }} 张
               </span>
             </div>
 
             <!-- Single Row of Tiles: Melds + Standing Hand Tiles -->
             <div class="flex items-center justify-start sm:justify-center gap-1 sm:gap-1.5 overflow-x-auto py-0.5 max-w-full">
               <!-- Melded sets (碰/杠亮副) -->
-              <template v-for="(set, sIdx) in (winningBreakdown.winnerSeat === 0 ? meldedTiles : (oppMelds[(winningBreakdown.winnerSeat ?? 1) - 1] || []))" :key="`meld-${sIdx}`">
+              <template v-for="(set, sIdx) in settledWinningMelds" :key="`meld-${sIdx}`">
                 <div class="flex items-center gap-0.5 bg-[#EFE5D3] px-1 py-0.5 rounded-lg border border-[#C89B3C]/50 shrink-0">
                   <span class="text-[9px] font-bold text-[#8B2516] mr-0.5">{{ set.length === 4 ? '杠' : '碰' }}</span>
                   <template v-for="(tile, tIdx) in set" :key="`meld-t-${tIdx}`">
@@ -281,12 +281,12 @@
 
               <!-- Melds divider if any -->
               <div
-                v-if="(winningBreakdown.winnerSeat === 0 ? meldedTiles : (oppMelds[(winningBreakdown.winnerSeat ?? 1) - 1] || [])).length > 0"
+                v-if="settledWinningMelds.length > 0"
                 class="w-px h-6 bg-[#D8C7B0] shrink-0 mx-0.5"
               ></div>
 
-              <!-- Hand Standing Tiles -->
-              <template v-for="(tile, tIdx) in ((winningBreakdown.winnerSeat ?? 0) === 0 ? myHand : (oppHands[(winningBreakdown.winnerSeat ?? 1) - 1] || []))" :key="tile.id || `hand-${tIdx}`">
+              <!-- Hand Standing Tiles (Sorted cleanly: Wan -> Tiao -> Tong -> Zi) -->
+              <template v-for="(tile, tIdx) in settledWinningHand" :key="tile.id || `hand-${tIdx}`">
                 <div class="relative h-[38px] sm:h-[46px] w-[26px] sm:w-[32px] shrink-0 rounded-md sm:rounded-lg bg-gradient-to-b from-[#FFFDF8] via-[#FAF4E8] to-[#EFE2C8] border border-[#C89B3C]/80 shadow-xs flex items-center justify-center p-0.5">
                   <img :src="getMahjongImagePath(tile)" :alt="tile.text" class="w-full h-full object-contain drop-shadow-2xs pointer-events-none" />
                 </div>
@@ -452,7 +452,7 @@
                 ? 'bg-[#137333] text-white ring-emerald-300 opacity-90'
                 : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] text-white shadow-amber-700/30 ring-amber-300'"
             >
-              <span>{{ hasClickedReady ? `✅ 已准备 · 等待牌友 (${readyPlayersCount}/4)...` : '继续下一局 🀄 ➔' }}</span>
+              <span>{{ hasClickedReady ? `✅ 已准备 · 等待牌友 (${readyPlayersCount}/4)...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}</span>
             </button>
           </div>
         </div>
@@ -476,7 +476,7 @@
               荒牌流局
             </h3>
             <p class="text-xs sm:text-sm text-[#5C4533] mt-1 font-medium">
-              牌墙已摸空，无人自摸，本局平手！
+              {{ tipMessage || '牌墙已摸空，无人自摸，本局平手！' }}
             </p>
           </div>
           <div class="flex items-center gap-3 w-full mt-2 justify-center">
@@ -494,7 +494,7 @@
               class="px-6 py-2 text-xs sm:text-sm font-black rounded-xl shadow-md ring-1 active:scale-95 cursor-pointer text-white"
               :class="hasClickedReady ? 'bg-[#137333] ring-emerald-300 opacity-90' : 'bg-gradient-to-r from-[#B45309] via-[#D97706] to-[#B45309] hover:from-[#92400E] hover:to-[#B45309] ring-amber-300'"
             >
-              {{ hasClickedReady ? `✅ 已准备 · 等待牌友 (${readyPlayersCount}/4)...` : '继续下一局 🀄 ➔' }}
+              {{ hasClickedReady ? `✅ 已准备 · 等待牌友 (${readyPlayersCount}/4)...` : `继续下一局 🀄 (${settlementCountdown}s) ➔` }}
             </button>
           </div>
         </div>
@@ -701,12 +701,17 @@ watch(() => props.tableTheme, () => {
   drawTable();
 });
 
-// 仅当接收到全新权威发牌切片时才执行新开局，严禁因玩家列表属性变更重置当前进行中的牌桌手牌
+// 仅当接收到全新权威发牌切片时才执行新开局，严禁因玩家列表属性变更重置当前进行中的牌桌手牌或结算界面
 watch(() => props.initialDeal, (deal) => {
   if (props.isPracticeMode || !deal?.seatCards) return;
   const dealIdentifier = deal.dealId || deal.createdAt || (Array.isArray(deal.seatCards[0]) ? deal.seatCards[0].map((c: any) => c.id || c.name).join('-') : '');
-  if (lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier && myHand.value && myHand.value.length > 0) {
-    console.log('🛡️ [麻将防重置] 发牌标识一致，保持当前牌桌手牌与弃牌池');
+  if (lastAppliedDealId.value && lastAppliedDealId.value === dealIdentifier) {
+    if (hasWon.value || showSettlement.value || isDrawStalemate.value || dealingPhase.value === 'settled' || (myHand.value && myHand.value.length > 0)) {
+      console.log('🛡️ [麻将防重置] 发牌标识一致，保持当前牌桌或结算界面');
+      return;
+    }
+  }
+  if ((hasWon.value || showSettlement.value || isDrawStalemate.value || dealingPhase.value === 'settled') && (!dealIdentifier || dealIdentifier === lastAppliedDealId.value)) {
     return;
   }
   dealNewMatch(undefined, false, deal);
@@ -885,6 +890,51 @@ const isDrawStalemate = ref(false);
 const turnCountdown = ref(60);
 let countdownInterval: any = null;
 let autoHostTimer: any = null;
+
+const settlementCountdown = ref(60);
+const settlementExpiresAtRef = ref<number | null>(null);
+let settlementInterval: any = null;
+
+function stopSettlementCountdown() {
+  if (settlementInterval) {
+    clearInterval(settlementInterval);
+    settlementInterval = null;
+  }
+  settlementExpiresAtRef.value = null;
+}
+
+function startSettlementCountdown(expiresAt?: number | null, serverTs?: number | null) {
+  stopSettlementCountdown();
+  const now = Date.now();
+  const offset = typeof serverTs === 'number' && serverTs > 0 ? now - serverTs : 0;
+  const targetExpire = typeof expiresAt === 'number' && expiresAt > 0 ? expiresAt + offset : now + 60000;
+  settlementExpiresAtRef.value = targetExpire;
+  settlementCountdown.value = Math.max(0, Math.ceil((targetExpire - now) / 1000));
+
+  settlementInterval = setInterval(() => {
+    if (!hasWon.value && !isDrawStalemate.value) {
+      stopSettlementCountdown();
+      return;
+    }
+    const remMs = (settlementExpiresAtRef.value || Date.now()) - Date.now();
+    settlementCountdown.value = Math.max(0, Math.ceil(remMs / 1000));
+    if (remMs <= 0) {
+      if (hasClickedReady.value) {
+        // 已点击准备继续下一局，停在等待其他玩家或转入等待室，不退出大厅
+        if (settlementInterval) {
+          clearInterval(settlementInterval);
+          settlementInterval = null;
+        }
+        return;
+      }
+      // 联机房间多留 1.5s 给服务端推送 settlement_timeout，超时兜底或试玩模式自动退出到大厅
+      if (props.isPracticeMode || !props.ws || props.ws.readyState !== WebSocket.OPEN || remMs <= -1500) {
+        stopSettlementCountdown();
+        handleLeaveToLobby();
+      }
+    }
+  }, 500);
+}
 
 function startTurnCountdown() {
   stopTurnCountdown();
@@ -1527,6 +1577,9 @@ interface WinningBreakdown {
   opponentPayouts?: number[];
   winnerSeat?: number;
   netCoinsPerSeat?: number[];
+  winningHand?: MahjongTile[];
+  winningMelds?: MahjongTile[][];
+  winnerNameSnapshot?: string;
 }
 
 const playerKongExtra = ref<number[]>([0, 0, 0]); // [East, North, West] extra points owed by opponents due to player's Kongs
@@ -1544,6 +1597,34 @@ const winningBreakdown = ref<WinningBreakdown>({
   payoutPerOpponent: 10,
   isFourHongzhong: false,
   netCoinsPerSeat: [0, 0, 0, 0],
+  winningHand: [],
+  winningMelds: [],
+  winnerNameSnapshot: '',
+});
+
+const settledWinnerLabel = computed(() => {
+  const wSeat = winningBreakdown.value.winnerSeat ?? (lastWinnerSeat.value ?? dealerSeat.value);
+  if (props.roomPlayers && props.roomPlayers.length > 0) {
+    return getSeatName(wSeat);
+  }
+  return winningBreakdown.value.winnerNameSnapshot || SEAT_NAMES[wSeat] || '牌友';
+});
+
+const settledWinningMelds = computed<MahjongTile[][]>(() => {
+  if (Array.isArray(winningBreakdown.value.winningMelds) && winningBreakdown.value.winningMelds.length > 0) {
+    return winningBreakdown.value.winningMelds;
+  }
+  const wSeat = winningBreakdown.value.winnerSeat ?? 0;
+  return wSeat === 0 ? meldedTiles.value : (oppMelds.value[wSeat - 1] || []);
+});
+
+const settledWinningHand = computed<MahjongTile[]>(() => {
+  if (Array.isArray(winningBreakdown.value.winningHand) && winningBreakdown.value.winningHand.length > 0) {
+    return sortHand(winningBreakdown.value.winningHand);
+  }
+  const wSeat = winningBreakdown.value.winnerSeat ?? 0;
+  const raw = wSeat === 0 ? myHand.value : (oppHands.value[wSeat - 1] || []);
+  return sortHand(raw);
 });
 
 const isHongzhongMode = computed(() => {
@@ -1606,6 +1687,8 @@ function sortHand(hand: MahjongTile[]): MahjongTile[] {
 }
 
 function handleLeaveToLobby() {
+  stopSettlementCountdown();
+  clearLocalSnapshot();
   try {
     localStorage.removeItem('app_active_game_lock');
   } catch {}
@@ -1629,17 +1712,20 @@ function handleLeaveToLobby() {
 function onRestartGame() {
   soundFX.playTap();
   cleanAllGameTimers();
-  showSettlement.value = false;
   if (props.isPracticeMode || isAllOtherPlayersBots.value) {
+    stopSettlementCountdown();
+    showSettlement.value = false;
     hasWon.value = false;
     isDrawStalemate.value = false;
     hasClickedReady.value = false;
+    clearLocalSnapshot();
     continueGame();
     emit('restart');
     return;
   }
 
   hasClickedReady.value = true;
+  saveLocalSnapshotNow();
   if (props.ws && props.ws.readyState === WebSocket.OPEN) {
     try {
       props.ws.send(JSON.stringify({
@@ -1685,11 +1771,8 @@ function saveLocalSnapshotNow() {
   if (props.isPracticeMode) return;
   const roomId = props.roomId;
   if (!roomId) return;
-  if (hasWon.value || isDrawStalemate.value || showSettlement.value) {
-    clearLocalSnapshot();
-    return;
-  }
-  if (dealingPhase.value !== 'playing' || !myHand.value || myHand.value.length === 0) return;
+  const isSettledState = hasWon.value || isDrawStalemate.value || showSettlement.value || dealingPhase.value === 'settled';
+  if (!isSettledState && (dealingPhase.value !== 'playing' || !myHand.value || myHand.value.length === 0)) return;
 
   try {
     const snap = {
@@ -1710,7 +1793,17 @@ function saveLocalSnapshotNow() {
       wallPool: wallPool,
       seatKongScores: seatKongScores.value,
       playerKongExtra: playerKongExtra.value,
+      kongRecords: kongRecords.value,
       isHongzhongMode: isHongzhongMode.value,
+      isSettled: isSettledState,
+      hasWon: hasWon.value,
+      showSettlement: showSettlement.value,
+      isDrawStalemate: isDrawStalemate.value,
+      winningBreakdown: winningBreakdown.value,
+      lastWinnerSeat: lastWinnerSeat.value,
+      hasClickedReady: hasClickedReady.value,
+      settlementExpiresAt: settlementExpiresAtRef.value,
+      tipMessage: tipMessage.value,
       timestamp: Date.now(),
     };
     const serialized = JSON.stringify(snap);
@@ -1735,7 +1828,8 @@ function tryRestoreLocalSnapshot(): boolean {
     const raw = localStorage.getItem(`mahjong_table_snapshot_${roomId}`);
     if (!raw) return false;
     const snap = JSON.parse(raw);
-    if (!snap || snap.roomId !== roomId || !Array.isArray(snap.myHand) || snap.myHand.length === 0) return false;
+    if (!snap || snap.roomId !== roomId) return false;
+    if (!snap.isSettled && (!Array.isArray(snap.myHand) || snap.myHand.length === 0)) return false;
     if (typeof snap.mySeat === 'number' && snap.mySeat !== mySeat.value) return false;
     if (Date.now() - (snap.timestamp || 0) > 2 * 3600 * 1000) {
       clearLocalSnapshot();
@@ -1743,12 +1837,12 @@ function tryRestoreLocalSnapshot(): boolean {
     }
     const currentDeal = props.initialDeal;
     const dealIdentifier = currentDeal?.dealId || currentDeal?.createdAt || (Array.isArray(currentDeal?.seatCards?.[0]) ? currentDeal.seatCards[0].map((c: any) => c.id || c.name).join('-') : '');
-    if (dealIdentifier && snap.dealId !== dealIdentifier) {
+    if (dealIdentifier && snap.dealId && snap.dealId !== dealIdentifier) {
       return false;
     }
 
     lastAppliedDealId.value = snap.dealId || dealIdentifier || '';
-    myHand.value = snap.myHand;
+    myHand.value = Array.isArray(snap.myHand) ? sortHand(snap.myHand) : [];
     if (Array.isArray(snap.oppHands)) oppHands.value = snap.oppHands;
     discards.value = Array.isArray(snap.discards) ? snap.discards : [];
     lastDiscarded.value = snap.lastDiscarded || null;
@@ -1764,14 +1858,36 @@ function tryRestoreLocalSnapshot(): boolean {
     if (Array.isArray(snap.wallPool)) wallPool = snap.wallPool;
     if (Array.isArray(snap.seatKongScores)) seatKongScores.value = snap.seatKongScores;
     if (Array.isArray(snap.playerKongExtra)) playerKongExtra.value = snap.playerKongExtra;
+    if (Array.isArray(snap.kongRecords)) kongRecords.value = snap.kongRecords;
 
     cleanDealingTimers();
-    dealingPhase.value = 'playing';
     isRollingDice.value = false;
     myHandDealtCount.value = myHand.value.length;
     oppHandsDealtCount.value = [oppCounts.value[0], oppCounts.value[1], oppCounts.value[2]];
     handFlipProgress.value = 1;
 
+    if (snap.isSettled) {
+      dealingPhase.value = 'settled';
+      hasWon.value = Boolean(snap.hasWon);
+      showSettlement.value = Boolean(snap.showSettlement);
+      isDrawStalemate.value = Boolean(snap.isDrawStalemate);
+      lastWinnerSeat.value = snap.lastWinnerSeat ?? null;
+      hasClickedReady.value = Boolean(snap.hasClickedReady);
+      if (snap.winningBreakdown) {
+        winningBreakdown.value = {
+          ...snap.winningBreakdown,
+          winningHand: Array.isArray(snap.winningBreakdown.winningHand) ? sortHand(snap.winningBreakdown.winningHand) : [],
+          winningMelds: normalizeServerMelds(snap.winningBreakdown.winningMelds || []),
+        };
+      }
+      if (snap.tipMessage) tipMessage.value = snap.tipMessage;
+      startSettlementCountdown(snap.settlementExpiresAt, Date.now());
+      drawTable();
+      console.log('🀄 [麻将结算断线重连] 瞬时恢复结算界面状态');
+      return true;
+    }
+
+    dealingPhase.value = 'playing';
     tipMessage.value = turnPlayer.value === 0 ? '🔄 牌桌状态已恢复！轮到您出牌' : `🔄 牌桌状态已恢复！当前轮到【${SEAT_NAMES[turnPlayer.value]}】出牌`;
     if (turnPlayer.value === 0 && !isClaiming.value) {
       startTurnCountdown();
@@ -1802,13 +1918,8 @@ function handleReconnectSync(msg: any) {
 
   const bs = msg.boardState;
   const deal = msg.deal;
-  if (bs?.phase === 'ended' && bs?.isDraw) {
-    dealingPhase.value = 'settled';
-  } else if (bs?.phase && bs.phase !== 'ended') {
-    hasWon.value = false;
-    showSettlement.value = false;
-    isDrawStalemate.value = false;
-  }
+  const isServerEnded = bs?.phase === 'ended' || msg.room?.status === 'finished';
+
   if (Array.isArray(msg.players)) {
     msg.players.forEach((p: any) => {
       if (p && typeof p.seat === 'number') {
@@ -1818,6 +1929,25 @@ function handleReconnectSync(msg: any) {
         else delete disconnectedSeats.value[p.seat];
       }
     });
+    const selfPl = msg.players.find(
+      (p: any) =>
+        p &&
+        (p.seat === mySeat.value ||
+          (props.currentUser?.id && (p.id === props.currentUser.id || p.originalId === props.currentUser.id)))
+    );
+    if (selfPl) {
+      hasClickedReady.value = Boolean(selfPl.isReady);
+    }
+  }
+
+  if (isServerEnded) {
+    dealingPhase.value = 'settled';
+  } else if (bs?.phase && bs.phase !== 'ended') {
+    stopSettlementCountdown();
+    hasWon.value = false;
+    showSettlement.value = false;
+    isDrawStalemate.value = false;
+    hasClickedReady.value = false;
   }
   if (bs?.autoManagedSeats) {
     for (let s = 0; s < 4; s++) {
@@ -1903,7 +2033,7 @@ function handleReconnectSync(msg: any) {
       sortHand([...(deal.seatCards[relToAbsSeat(3)] || [])]),
     ];
   }
-  if (Array.isArray(bs?.handsCount) && bs.handsCount.length === 4) {
+  if (!isServerEnded && Array.isArray(bs?.handsCount) && bs.handsCount.length === 4) {
     for (let r = 1; r < 4; r++) {
       const targetLen = Number(bs.handsCount[relToAbsSeat(r)] ?? 13);
       while (oppHands.value[r - 1].length > targetLen) {
@@ -1925,16 +2055,53 @@ function handleReconnectSync(msg: any) {
   myHandDealtCount.value = myHand.value.length;
   oppHandsDealtCount.value = [oppCounts.value[0], oppCounts.value[1], oppCounts.value[2]];
 
+  const resolvedExpiresAt = msg.settlementExpiresAt || bs?.settlement?.settlementExpiresAt || null;
+
   if (bs?.phase === 'ended' && bs?.isDraw) {
-    triggerDrawStalemate('牌墙抓毕，本局荒庄（流局）！', true);
+    if (isDrawStalemate.value) {
+      startSettlementCountdown(resolvedExpiresAt, msg.serverTs);
+      saveLocalSnapshotNow();
+      return;
+    }
+    triggerDrawStalemate(bs?.settlement?.message || '牌墙抓毕，本局荒庄（流局）！', true, {
+      ...(bs.settlement || {}),
+      settlementExpiresAt: resolvedExpiresAt,
+      serverTs: msg.serverTs,
+    });
     return;
   }
 
-  if (bs?.phase === 'ended' && bs?.winnerSeat !== null && bs?.winnerSeat !== undefined && bs?.settlement) {
-    triggerMahjongWin(absToRelSeat(bs.winnerSeat), Boolean(bs.settlement.isFourHongzhong), {
-      ...bs.settlement,
-      winningHand: bs.settlement.winningHand,
-      winningMelds: bs.settlement.winningMelds,
+  if (bs?.phase === 'ended' && bs?.winnerSeat !== null && bs?.winnerSeat !== undefined) {
+    const stlObj = bs.settlement || {};
+    const relWinner = absToRelSeat(bs.winnerSeat);
+    if (hasWon.value && showSettlement.value) {
+      // 已被本地快照抢先恢复，补充权威数据与服务器倒计时
+      if (Array.isArray(stlObj.winningHand) && stlObj.winningHand.length > 0) {
+        const cleanAuthHand = sortHand(stlObj.winningHand.filter((t: any) => t && !t.hidden));
+        if (cleanAuthHand.length > 0) {
+          winningBreakdown.value.winningHand = cleanAuthHand;
+          if (relWinner === 0) myHand.value = cleanAuthHand;
+          else oppHands.value[relWinner - 1] = cleanAuthHand;
+        }
+      }
+      if (Array.isArray(stlObj.winningMelds)) {
+        const normAuthMelds = normalizeServerMelds(stlObj.winningMelds).map((m) => sortHand(m));
+        winningBreakdown.value.winningMelds = normAuthMelds;
+        if (relWinner === 0) meldedTiles.value = normAuthMelds;
+        else oppMelds.value[relWinner - 1] = normAuthMelds;
+      }
+      winningBreakdown.value.winnerNameSnapshot = SEAT_NAMES[relWinner];
+      startSettlementCountdown(resolvedExpiresAt, msg.serverTs);
+      saveLocalSnapshotNow();
+      drawTable();
+      return;
+    }
+    triggerMahjongWin(relWinner, Boolean(stlObj.isFourHongzhong || stlObj.isFourHz), {
+      ...stlObj,
+      winningHand: stlObj.winningHand,
+      winningMelds: stlObj.winningMelds,
+      settlementExpiresAt: resolvedExpiresAt,
+      serverTs: msg.serverTs,
       fromServerWs: true,
     });
     return;
@@ -1949,6 +2116,7 @@ function handleReconnectSync(msg: any) {
 }
 
 function dealNewMatch(designatedDealer?: number, forceReApply = false, dealOverride?: any) {
+  stopSettlementCountdown();
   hasClickedReady.value = false;
   lastOptimisticDrawId = null;
   lastOptimisticSuppTileId = null;
@@ -2645,10 +2813,8 @@ function triggerDrawStalemate(message = '牌墙已摸空，荒牌流局！', fro
         : 0);
   const kongNote = myKongNet !== 0 ? `（本局杠分 ${myKongNet > 0 ? `+${myKongNet}` : myKongNet} 筹码已结算）` : '';
   tipMessage.value = `${message}${kongNote}`;
-  clearLocalSnapshot();
-  try {
-    localStorage.removeItem('app_active_game_lock');
-  } catch {}
+  startSettlementCountdown(payloadData?.settlementExpiresAt, payloadData?.serverTs);
+  saveLocalSnapshotNow();
   emit('game-over', { gameType: 'mahjong', isDraw: true });
   if (!fromServerWs && isOnlineMultiplayerRoom.value) {
     sendGameMove('draw_stalemate', { absSeat: mySeat.value });
@@ -2663,21 +2829,26 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
   }
 
   const isPlayer = winnerSeat === 0;
-  // 1. 同步全网权威胡牌手牌与亮副 (若为网络或托管结算，将赢家真实14张手牌同步至各端视图)
-  let winnerHand = isPlayer ? myHand.value : (oppHands.value[winnerSeat - 1] || []);
-  if (payloadData?.winningHand && Array.isArray(payloadData.winningHand) && payloadData.winningHand.length > 0) {
-    winnerHand = payloadData.winningHand;
-  }
+  // 1. 同步全网权威胡牌手牌与亮副，剔除遮罩占位牌并严格按花色点数理顺排序
+  const serverUnmaskedHand = Array.isArray(payloadData?.winningHand)
+    ? payloadData.winningHand.filter((t: any) => t && !t.hidden)
+    : [];
+  const rawLocalHand = isPlayer ? myHand.value : (oppHands.value[winnerSeat - 1] || []);
+  let winnerHand = serverUnmaskedHand.length > 0 ? sortHand(serverUnmaskedHand) : sortHand(rawLocalHand);
+
+  const rawMelds = Array.isArray(payloadData?.winningMelds)
+    ? normalizeServerMelds(payloadData.winningMelds)
+    : normalizeServerMelds(isPlayer ? meldedTiles.value : (oppMelds.value[winnerSeat - 1] || []));
+  const winnerMeldsSorted = rawMelds.map((m) => sortHand(m));
 
   // 防炸胡本地守卫：非服务端下发的本地胡牌，必须严格满足 3k+2、副露+手牌=14张，且通过胡牌/四红中检测
   if (!payloadData?.fromServerWs) {
-    const winnerMeldsLocal = isPlayer ? meldedTiles.value : (oppMelds.value[winnerSeat - 1] || []);
-    const totalCountLocal = winnerHand.length + winnerMeldsLocal.length * 3;
+    const totalCountLocal = winnerHand.length + winnerMeldsSorted.length * 3;
     const hzCntLocal = isHongzhongMode.value ? winnerHand.filter(isHongzhong).length : 0;
     const isFourHzLocal = isHongzhongMode.value && hzCntLocal >= 4;
     const isLegalWinLocal = isHongzhongMode.value ? checkHongzhongWin(winnerHand) : checkMahjongWin(winnerHand);
     if (winnerHand.length % 3 !== 2 || totalCountLocal !== 14 || (!isFourHzLocal && !isLegalWinLocal)) {
-      console.warn(`🛡️ [客户端防炸胡拦截] 席位 ${winnerSeat} 手牌(${winnerHand.length})+副露(${winnerMeldsLocal.length})=${totalCountLocal} 不符合自摸胡牌条件，拒绝结算！`);
+      console.warn(`🛡️ [客户端防炸胡拦截] 席位 ${winnerSeat} 手牌(${winnerHand.length})+副露(${winnerMeldsSorted.length})=${totalCountLocal} 不符合自摸胡牌条件，拒绝结算！`);
       return;
     }
   }
@@ -2687,19 +2858,22 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
   hasWon.value = true;
   showSettlement.value = true;
   dealingPhase.value = 'settled';
-  clearLocalSnapshot();
-  const seatNames = ['您 (本席)', '东席 (南洋商贾)', '北席 (九龙棋杰)', '西席 (濠江赌客)'];
-  const winnerName = seatNames[winnerSeat] || '雀圣';
+  const winnerName = SEAT_NAMES[winnerSeat] || ['您 (本席)', '东席 (牌友)', '北席 (牌友)', '西席 (牌友)'][winnerSeat] || '雀圣';
 
-  if (payloadData?.winningHand && Array.isArray(payloadData.winningHand) && payloadData.winningHand.length > 0) {
+  if (serverUnmaskedHand.length > 0 || !isPlayer) {
     if (isPlayer) {
       myHand.value = winnerHand;
+      if (Array.isArray(payloadData?.winningMelds)) {
+        meldedTiles.value = winnerMeldsSorted;
+      }
     } else {
       oppHands.value[winnerSeat - 1] = winnerHand;
-      if (payloadData.winningMelds && Array.isArray(payloadData.winningMelds)) {
-        oppMelds.value[winnerSeat - 1] = payloadData.winningMelds;
+      if (Array.isArray(payloadData?.winningMelds)) {
+        oppMelds.value[winnerSeat - 1] = winnerMeldsSorted;
       }
     }
+  } else {
+    myHand.value = winnerHand;
   }
 
   const hzCountInHand = winnerHand.filter(isHongzhong).length;
@@ -2869,6 +3043,9 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
     opponentPayouts,
     winnerSeat,
     netCoinsPerSeat: [...netCoinsPerSeat],
+    winningHand: [...winnerHand],
+    winningMelds: winnerMeldsSorted.map((m) => [...m]),
+    winnerNameSnapshot: winnerName,
   };
 
   lastWinnerSeat.value = winnerSeat;
@@ -2909,8 +3086,8 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
     sendGameMove('hu', {
       winner: mySeat.value,
       isFourHz: fourHzWin,
-      winningHand: myHand.value,
-      winningMelds: meldedTiles.value,
+      winningHand: winnerHand,
+      winningMelds: winnerMeldsSorted,
       seatKongScores: seatKongScores.value,
       fan: 1 + hitCount,
       rewardCoins,
@@ -2919,9 +3096,8 @@ function triggerMahjongWin(winnerSeat: number, isFourHongzhong = false, payloadD
     });
   }
 
-  try {
-    localStorage.removeItem('app_active_game_lock');
-  } catch {}
+  startSettlementCountdown(payloadData?.settlementExpiresAt, payloadData?.serverTs);
+  saveLocalSnapshotNow();
   emit('game-over', { gameType: 'mahjong', winnerSeat, rewardCoins });
 
   drawTable();
@@ -4720,6 +4896,7 @@ function onWsMessage(ev: MessageEvent) {
         dealNewMatch(undefined, true, msg.deal);
       }
     } else if (msg.type === 'scene_reconnect_ack') {
+      if (msg.failed) return;
       lastProcessedMoveCount = -1;
       lastProcessedMoveKey = '';
       handleReconnectSync(msg);
@@ -4728,8 +4905,8 @@ function onWsMessage(ev: MessageEvent) {
       lastProcessedMoveKey = '';
       if (msg.deal) {
         const dealIdentifier = msg.deal.dealId || msg.deal.createdAt || '';
-        if (dealIdentifier && dealIdentifier === lastAppliedDealId.value && dealingPhase.value === 'playing') {
-          console.log('🛡️ [麻将防重置] 正在对局中且发牌一致，保持当前牌桌');
+        if (dealIdentifier && dealIdentifier === lastAppliedDealId.value && (dealingPhase.value === 'playing' || dealingPhase.value === 'settled')) {
+          console.log('🛡️ [麻将防重置] 发牌标识一致，保持当前牌桌或结算状态');
           return;
         }
         clearLocalSnapshot();
@@ -4752,6 +4929,18 @@ function onWsMessage(ev: MessageEvent) {
             }
           }
         });
+        const selfPl = updatedPlayers.find(
+          (p: any) =>
+            p &&
+            (p.seat === mySeat.value ||
+              (props.currentUser?.id && (p.id === props.currentUser.id || p.originalId === props.currentUser.id)))
+        );
+        if (selfPl && typeof selfPl.isReady === 'boolean') {
+          hasClickedReady.value = selfPl.isReady;
+        }
+        if (msg.settlementExpiresAt && (hasWon.value || isDrawStalemate.value)) {
+          startSettlementCountdown(msg.settlementExpiresAt, msg.serverTs);
+        }
         drawTable();
       }
     } else if (msg.type === 'set_auto_host') {
@@ -5193,6 +5382,7 @@ onBeforeUnmount(() => {
     clearTimeout(snapshotTimer);
     snapshotTimer = null;
   }
+  stopSettlementCountdown();
   if (props.ws) {
     try {
       props.ws.removeEventListener('message', onWsMessage);

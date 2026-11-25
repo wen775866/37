@@ -196,6 +196,32 @@ export function calculateZhuaMa(drawnTiles: MahjongTile[], baseStake: number): {
   };
 }
 
+export function sortMahjongTiles(tiles: MahjongTile[]): MahjongTile[] {
+  if (!Array.isArray(tiles)) return [];
+  const typeOrder: Record<string, number> = { wan: 0, tiao: 1, tong: 2, zi: 3 };
+  return [...tiles].sort((a, b) => {
+    const orderA = typeOrder[a?.type] ?? 9;
+    const orderB = typeOrder[b?.type] ?? 9;
+    if (orderA !== orderB) return orderA - orderB;
+    return (Number(a?.value) || 0) - (Number(b?.value) || 0);
+  });
+}
+
+export function normalizeMahjongMelds(rawMelds: any[]): MahjongTile[][] {
+  if (!Array.isArray(rawMelds)) return [];
+  return rawMelds
+    .map((m: any) => {
+      if (Array.isArray(m)) return sortMahjongTiles(m);
+      if (Array.isArray(m?.tiles) && m.tiles.length > 0) return sortMahjongTiles(m.tiles);
+      if (m && m.tile) {
+        const cnt = m.type === 'gang' ? 4 : 3;
+        return Array.from({ length: cnt }, (_, i) => ({ ...m.tile, id: `${m.tile.id || 'm'}-m-${i}` }));
+      }
+      return [];
+    })
+    .filter((arr: MahjongTile[]) => arr.length > 0);
+}
+
 export interface MahjongSettlementResult {
   winnerSeat: number;
   winningHand: MahjongTile[];
@@ -219,9 +245,11 @@ export function computeMahjongSettlement(
   isFourHzOverride?: boolean,
   maTilesOverride?: MahjongTile[]
 ): MahjongSettlementResult {
+  const sortedWinningHand = sortMahjongTiles(winningHand || []);
+  const normalizedMelds = normalizeMahjongMelds(winningMelds || []);
   const isHongzhongMode = sceneMode.includes('hongzhong');
   const baseMaCount = sceneMode.includes('10') ? 10 : 6;
-  const hzCount = (winningHand || []).filter(isHongzhong).length;
+  const hzCount = sortedWinningHand.filter(isHongzhong).length;
   const isFourHongzhong = isFourHzOverride ?? (isHongzhongMode && hzCount >= 4);
 
   let maCount = baseMaCount;
@@ -286,8 +314,8 @@ export function computeMahjongSettlement(
 
   return {
     winnerSeat,
-    winningHand,
-    winningMelds,
+    winningHand: sortedWinningHand,
+    winningMelds: normalizedMelds,
     maCount,
     maTiles,
     hitMaCount,

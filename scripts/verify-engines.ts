@@ -410,6 +410,30 @@ function runMahjongTests() {
   assert.equal(fourHzSettle.payoutPerOpponent, 70);
   assert.equal(fourHzSettle.netCoinsPerSeat[0], 210);
   assert.equal(fourHzSettle.netCoinsPerSeat.reduce((a, b) => a + b, 0), 0);
+
+  // 5. Unsorted winningHand + object melds must be normalized & sorted (wan -> tiao -> tong -> zi)
+  const unsortedWin: MahjongTile[] = [
+    mjTile('zi', 5, 's1'),
+    mjTile('tong', 9, 's2'),
+    mjTile('wan', 1, 's3'),
+    mjTile('tiao', 4, 's4'),
+    mjTile('wan', 3, 's5'),
+    mjTile('tong', 2, 's6'),
+    mjTile('wan', 2, 's7'),
+    mjTile('tiao', 5, 's8'),
+  ];
+  const rawObjectMelds: any[] = [
+    { type: 'peng', tile: mjTile('tong', 7, 'm1') },
+    [mjTile('tiao', 3, 'm2a'), mjTile('tiao', 3, 'm2b'), mjTile('tiao', 3, 'm2c')],
+  ];
+  const sortedSettle = computeMahjongSettlement(1, unsortedWin, rawObjectMelds, wallMa, 'hongzhong-6', [0, 0, 0, 0]);
+  assert.deepEqual(
+    sortedSettle.winningHand.map((t) => `${t.type}-${t.value}`),
+    ['wan-1', 'wan-2', 'wan-3', 'tiao-4', 'tiao-5', 'tong-2', 'tong-9', 'zi-5'],
+    'computeMahjongSettlement must sort winningHand deterministically'
+  );
+  assert.equal(sortedSettle.winningMelds.length, 2);
+  assert.equal(sortedSettle.winningMelds[0].length, 3);
 }
 
 runYansanTests();
